@@ -36,7 +36,8 @@ const STATUSES = new Set(['pending', 'accepted', 'dismissed', 'removed']);
 /* 正则 / 词表                                                         */
 /* ------------------------------------------------------------------ */
 
-const SUBAGENT_TITLE_RE = /research teammate|subagent|研究队友/i;
+// 子代理/队友会话：这些 todo 是 agent 的工作项，不该进用户的建议箱。
+const SUBAGENT_TITLE_RE = /research teammate|subagent|teammate|研究队友|^you are (a|an)\s/i;
 
 // 会话标题/任务文本里的 agent 编排噪声
 const NOISE_SUBSTR_RE = [

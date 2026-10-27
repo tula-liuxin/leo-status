@@ -1,6 +1,7 @@
 # leo-status v0.4.0 契约：自然导入 + 阿源
 
 > 状态：实现中（2026-10-27）。前序契约见 `CONTRACT.md`(v1) / `CONTRACT-V2.md`(多设备) / `CONTRACT-V3.md`(行内操作)。
+> **v0.4.1 修订**：DSH 会话 todo 不再直接进看板（只作为阿源建议，accept 后才以 `kind:'suggestion'` 出现）；子代理/队友会话（title 命中 `teammate|subagent|研究队友|^you are a`）整会话不进建议箱；升级时一次性 dismiss 旧的 `source:'session'` pending 建议（tombstone，不复活）；阿源聊天区升级为自绘 Markdown 对话（头像/时间/模型徽标/代码块/快捷问题/失败重试/记忆确认）。
 > 本版本目标（用户原话）：「让这些 todo 的导入更自然、准确」；Obsidian 自动发现；会话 todo 只收「收尾型 / 高相关且大概率乐意做」的，且**必须点 accept**；新增全局管家 agent「阿源」：composer 左下 icon + 展开对话、记忆、红点分类信号（todo 建议 / 事项提醒 / 关键 deadline）。
 
 ## 0. 一句话架构
@@ -242,6 +243,7 @@ export function createYuanService({ dataDir, log, llm, getModel, config })
 ### 5.1 看板注入
 
 `buildLocalBoard(snapshot, meta)` 与 hub board 后统一经 `augmentBoard(board)`：
+- **先剥离** `kind==='dsh'` 的 todo 与 `kind==='dsh'` 的来源（v0.4.1；DSH 会话只走建议箱），并重算 stats；
 - `board.suggestions = store.list('pending')`（含 review，字段同 3.1）
 - `board.yuan = { badge, signals, unread, name:'阿源' }`
 - `board.todos` 追加 accepted 建议：`{ id, kind:'suggestion', text, done:false, cancelled:false, editable:false, writable:false, sourceLabel:'阿源', sessionId, sessionTitle, acceptedAt }`

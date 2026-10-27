@@ -38,7 +38,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.4.0'
+export const PLUGIN_VERSION = '0.4.1'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -270,6 +270,41 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * v0.4.1 迁移：旧版把 DSH 会话 todo 直接放进看板/建议箱，几乎都不可用。
+   * 一次性清空「session 来源」的建议（pending 与 accepted 都清），tombstone 后不再复活；
+   * 阿源自己提议（source:'yuan'）和用户手动加的保留。
+   */
+  async function migrateStaleSessionSuggestions() {
+    if (suggestionStore === null) return
+    const migrations = settings.migrations !== null && typeof settings.migrations === 'object' ? settings.migrations : {}
+    if (migrations.removedSessionSuggestionsAt) return
+    let removed = 0
+    try {
+      for (const status of ['pending', 'accepted']) {
+        for (const item of suggestionStore.list(status)) {
+          if (item === null || typeof item !== 'object' || item.source !== 'session') continue
+          try {
+            if (suggestionStore.remove(item.id)) removed += 1
+          } catch {
+            /* 单条失败不影响迁移 */
+          }
+        }
+      }
+      settings = await saveSettings(dataDir, {
+        ...settings,
+        migrations: {
+          ...migrations,
+          dismissedSessionSuggestionsAt: migrations.dismissedSessionSuggestionsAt ?? nowIso(),
+          removedSessionSuggestionsAt: nowIso(),
+        },
+      })
+      log(`migration: removed stale session suggestions = ${removed}`)
+    } catch (error) {
+      log('migration failed:', describeError(error))
+    }
+  }
+
   /** 设置脱敏（去掉密码，供 UI 读取）。 */
   function safeSettings() {
     const copy = JSON.parse(JSON.stringify(settings))
@@ -349,11 +384,61 @@ export function apply(ctx, config) {
   }
 
   /**
+   * v0.4.1：DSH 会话 todo 不再直接进看板 —— 只作为阿源建议（必须 accept）。
+   * 这里把 Board 里已有的 dsh 行与 dsh 来源一并剥离，并重算统计。
+   */
+  function stripSessionTodos(board) {
+    if (board === null || typeof board !== 'object' || board.ok === false) return board
+    const todos = Array.isArray(board.todos) ? board.todos.filter((todo) => todo !== null && typeof todo === 'object' && todo.kind !== 'dsh') : []
+    const sources = Array.isArray(board.sources)
+      ? board.sources.filter((source) => source !== null && typeof source === 'object' && source.kind !== 'dsh' && source.id !== 'dsh-sessions')
+      : []
+    return {
+      ...board,
+      todos,
+      sources,
+      stats: recomputeStats(todos, new Date()),
+    }
+  }
+
+  function recomputeStats(todos, now) {
+    const stats = { total: todos.length, open: 0, done: 0, cancelled: 0, overdue: 0, dueToday: 0, dueSoon: 0, undated: 0 }
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    for (const todo of todos) {
+      if (todo.done === true) {
+        stats.done += 1
+        continue
+      }
+      if (todo.cancelled === true) {
+        stats.cancelled += 1
+        continue
+      }
+      stats.open += 1
+      if (typeof todo.due !== 'string' || todo.due === '') {
+        stats.undated += 1
+        continue
+      }
+      const parts = todo.due.split('-').map(Number)
+      if (parts.length < 3 || parts.some((value) => !Number.isFinite(value))) {
+        stats.undated += 1
+        continue
+      }
+      const dueLocal = new Date(parts[0], parts[1] - 1, parts[2])
+      const diffDays = Math.round((dueLocal.getTime() - today.getTime()) / 86_400_000)
+      if (diffDays < 0) stats.overdue += 1
+      else if (diffDays === 0) stats.dueToday += 1
+      else if (diffDays <= 7) stats.dueSoon += 1
+    }
+    return stats
+  }
+
+  /**
    * 看板增强：派生会话建议 → 合并建议箱 → accepted 变 todo → 阿源信号。
    * 失败只降级（不阻断看板）。
    */
   async function augmentBoard(board, snapshot) {
     if (board === null || typeof board !== 'object' || board.ok === false) return board
+    board = stripSessionTodos(board)
     let pending = []
     let accepted = []
     try {
@@ -943,6 +1028,7 @@ export function apply(ctx, config) {
     if (settingsError) log(settingsError)
     log(`mode=${settings.mode}`, `dataDir=${dataDir}`)
     await initV042()
+    await migrateStaleSessionSuggestions()
     if (isHub()) {
       await ensureHub()
     } else if (isDevice()) {

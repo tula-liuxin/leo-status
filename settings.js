@@ -13,7 +13,7 @@ import { promises as fsp } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
-export const SETTINGS_VERSION = 2
+export const SETTINGS_VERSION = 4
 
 const DEFAULT_SYNC_INTERVAL_MS = 60_000
 const DEFAULT_HUB_PORT = 8790
@@ -103,6 +103,7 @@ export function defaultSettings() {
     },
     sessionFilter: { ...DEFAULT_SESSION_FILTER },
     yuan: { ...DEFAULT_YUAN },
+    migrations: { dismissedSessionSuggestionsAt: null, removedSessionSuggestionsAt: null },
   }
 }
 
@@ -218,6 +219,16 @@ export function normalizeSettings(raw) {
   const maxMemory = Number(settings.yuan.maxMemory)
   settings.yuan.maxHistory = Number.isFinite(maxHistory) ? Math.min(100, Math.max(5, Math.floor(maxHistory))) : DEFAULT_YUAN.maxHistory
   settings.yuan.maxMemory = Number.isFinite(maxMemory) ? Math.min(200, Math.max(5, Math.floor(maxMemory))) : DEFAULT_YUAN.maxMemory
+
+  if (!isPlainObject(settings.migrations)) settings.migrations = { dismissedSessionSuggestionsAt: null, removedSessionSuggestionsAt: null }
+  settings.migrations.dismissedSessionSuggestionsAt =
+    typeof settings.migrations.dismissedSessionSuggestionsAt === 'string' && settings.migrations.dismissedSessionSuggestionsAt !== ''
+      ? settings.migrations.dismissedSessionSuggestionsAt
+      : null
+  settings.migrations.removedSessionSuggestionsAt =
+    typeof settings.migrations.removedSessionSuggestionsAt === 'string' && settings.migrations.removedSessionSuggestionsAt !== ''
+      ? settings.migrations.removedSessionSuggestionsAt
+      : null
 
   settings.version = SETTINGS_VERSION
   return settings

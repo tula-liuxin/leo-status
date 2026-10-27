@@ -104,6 +104,7 @@ window.__ModuleLoader__.load({
     const YUAN_DISMISS_API = '/leo-status/api/yuan/suggestion/dismiss';
     const YUAN_REMEMBER_API = '/leo-status/api/yuan/remember';
     const YUAN_MEMORY_DELETE_API = '/leo-status/api/yuan/memory/delete';
+    const YUAN_MEMORY_ACCEPT_API = '/leo-status/api/yuan/memory/accept';
     const YUAN_REMINDER_API = '/leo-status/api/yuan/reminder';
     const YUAN_REMINDER_DONE_API = '/leo-status/api/yuan/reminder/done';
     const YUAN_SEEN_API = '/leo-status/api/yuan/seen';
@@ -272,6 +273,7 @@ window.__ModuleLoader__.load({
       error: null,
       state: null,
       sending: false,
+      failedText: null,
       lastLoadedAt: 0,
       lastBoard: null,
       boardSeq: 0,
@@ -331,13 +333,18 @@ window.__ModuleLoader__.load({
           this.set({ error: describeError(error) });
         }
       },
-      async send(text) {
+      async send(text, options) {
+        const settings = options !== null && typeof options === 'object' ? options : {};
         const message = typeof text === 'string' ? text.trim() : '';
         if (message === '' || this.sending) return null;
+        const retry = settings.retry === true && this.failedText !== null;
         const previous = this.state;
-        const optimistic = { id: yuanLocalId('local-'), role: 'user', text: message, at: new Date().toISOString() };
-        const chat = previous !== null && Array.isArray(previous.chat) ? [...previous.chat, optimistic] : [optimistic];
-        this.set({ sending: true, error: null });
+        const previousChat = previous !== null && Array.isArray(previous.chat) ? previous.chat : EMPTY;
+        const optimistic = retry
+          ? null
+          : { id: yuanLocalId('local-'), role: 'user', text: message, at: new Date().toISOString() };
+        const chat = optimistic === null ? previousChat : [...previousChat, optimistic];
+        this.set({ sending: true, error: null, failedText: null });
         this.patchState({ chat });
         try {
           const body = await yuanRequest(YUAN_CHAT_API, { method: 'POST', body: { message } });
@@ -351,11 +358,12 @@ window.__ModuleLoader__.load({
                   signals: Array.isArray(body.signals) ? body.signals : previous.signals,
                   badge: body.badge !== undefined ? body.badge : previous.badge,
                 };
-          this.set({ sending: false, error: null, state: next });
+          this.set({ sending: false, error: null, failedText: null, state: next });
           return body;
         } catch (error) {
-          this.set({ sending: false, error: describeError(error) });
-          this.patchState({ chat: previous !== null && Array.isArray(previous.chat) ? previous.chat : [] });
+          // Keep the user's optimistic message so it can be retried without retyping.
+          this.set({ sending: false, error: describeError(error), failedText: message });
+          this.patchState({ chat });
           return null;
         }
       },
@@ -421,6 +429,25 @@ window.__ModuleLoader__.load({
           const memory = yuanMemoryList(
             body,
             previous.filter((item) => item !== null && typeof item === 'object' && item.id !== id),
+          );
+          if (this.state === null) this.set({ state: { ...normalizeYuanState(body), memory } });
+          else this.patchState({ memory });
+          return body;
+        } catch (error) {
+          this.set({ error: describeError(error) });
+          return null;
+        }
+      },
+      async acceptMemory(id) {
+        if (typeof id !== 'string' || id === '') return null;
+        const previous = this.state !== null && Array.isArray(this.state.memory) ? this.state.memory : EMPTY;
+        try {
+          const body = await yuanRequest(YUAN_MEMORY_ACCEPT_API, { method: 'POST', body: { id } });
+          const memory = yuanMemoryList(
+            body,
+            previous.map((item) =>
+              item !== null && typeof item === 'object' && item.id === id ? { ...item, status: 'active' } : item,
+            ),
           );
           if (this.state === null) this.set({ state: { ...normalizeYuanState(body), memory } });
           else this.patchState({ memory });
@@ -524,15 +551,277 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Copy text with a graceful no-op when the clipboard API is unavailable. */
+    function copyToClipboard(text) {
+      try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          navigator.clipboard.writeText(String(text ?? '')).catch(() => {});
+          return true;
+        }
+      } catch {
+        /* clipboard unavailable */
+      }
+      return false;
+    }
+
+    function CopyButton({ t, text, className }) {
+      const [copied, setCopied] = useState(false);
+      const label = copied ? t('yuanCopied') : t('yuanCopy');
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'ls-yuan-copy' + (typeof className === 'string' && className !== '' ? ' ' + className : ''),
+          title: label,
+          'aria-label': label,
+          onClick: () => {
+            copyToClipboard(text);
+            setCopied(true);
+            if (typeof setTimeout === 'function') setTimeout(() => setCopied(false), 1500);
+          },
+        },
+        label,
+      );
+    }
+
+    function sanitizeHref(value) {
+      const href = typeof value === 'string' ? value.trim() : '';
+      if (href === '') return null;
+      if (/^(https?:|mailto:)/i.test(href) || href.startsWith('/') || href.startsWith('#')) return href;
+      return null;
+    }
+
+    const YUAN_INLINE_PATTERN = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`|\[[^\]\n]+\]\([^)\s]+\))/g;
+
+    /** Render a safe Markdown inline subset into React nodes (no innerHTML). */
+    function renderInline(text) {
+      const source = typeof text === 'string' ? text : '';
+      if (source === '') return [];
+      const tokens = source.split(YUAN_INLINE_PATTERN);
+      const nodes = [];
+      tokens.forEach((token, index) => {
+        if (token === '') return;
+        const key = 'in-' + index;
+        if (/^\*\*[^*\n]+\*\*$/.test(token) || /^__[^_\n]+__$/.test(token)) {
+          nodes.push(h('strong', { key }, renderInline(token.slice(2, -2))));
+        } else if (/^\*[^*\n]+\*$/.test(token) || /^_[^_\n]+_$/.test(token)) {
+          nodes.push(h('em', { key }, renderInline(token.slice(1, -1))));
+        } else if (/^`[^`\n]+`$/.test(token)) {
+          nodes.push(h('code', { key, className: 'ls-yuan-inline-code' }, token.slice(1, -1)));
+        } else if (/^\[[^\]\n]+\]\([^)\s]+\)$/.test(token)) {
+          const match = /^\[([^\]\n]+)\]\(([^)\s]+)\)$/.exec(token);
+          const href = sanitizeHref(match === null ? '' : match[2]);
+          if (href === null) nodes.push(token);
+          else {
+            nodes.push(
+              h(
+                'a',
+                { key, href, target: '_blank', rel: 'noreferrer noopener', className: 'ls-yuan-link' },
+                match[1],
+              ),
+            );
+          }
+        } else {
+          nodes.push(token);
+        }
+      });
+      return nodes;
+    }
+
+    function isMarkdownBlockStart(line) {
+      return (
+        /^\s*$/.test(line) ||
+        /^\s*(```|~~~)/.test(line) ||
+        /^\s*#{1,6}\s+/.test(line) ||
+        /^\s*>/.test(line) ||
+        /^\s*([-*+]|\d+[.)])\s+/.test(line) ||
+        /^\s*([-*_])(\s*\1){2,}\s*$/.test(line)
+      );
+    }
+
+    function CodeBlock({ t, code, language }) {
+      const [copied, setCopied] = useState(false);
+      const label = copied ? t('yuanCopied') : t('yuanCopyCode');
+      const codeText = typeof code === 'string' ? code : '';
+      return h(
+        'div',
+        { className: 'ls-yuan-code' },
+        h(
+          'div',
+          { className: 'ls-yuan-code__head' },
+          h('span', { className: 'ls-yuan-code__lang' }, typeof language === 'string' && language !== '' ? language : ''),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ls-yuan-code-copy',
+              title: label,
+              'aria-label': label,
+              onClick: () => {
+                copyToClipboard(codeText);
+                setCopied(true);
+                if (typeof setTimeout === 'function') setTimeout(() => setCopied(false), 1500);
+              },
+            },
+            label,
+          ),
+        ),
+        h('pre', { className: 'ls-yuan-code__pre' }, h('code', null, codeText)),
+      );
+    }
+
+    /** Block-level Markdown subset renderer (headings/lists/code/quotes/links/...). */
+    function renderMarkdown(text, t) {
+      const lines = String(text ?? '').split(/\r?\n/);
+      const blocks = [];
+      let index = 0;
+      let key = 0;
+      const nextKey = () => 'md-' + key++;
+      while (index < lines.length) {
+        const line = lines[index];
+        if (/^\s*$/.test(line)) {
+          index += 1;
+          continue;
+        }
+        const fence = /^\s*(```|~~~)\s*([A-Za-z0-9_+-]*)\s*$/.exec(line);
+        if (fence !== null) {
+          const marker = fence[1];
+          const language = fence[2];
+          const codeLines = [];
+          index += 1;
+          const close = new RegExp('^\\s*' + marker + '\\s*$');
+          while (index < lines.length && !close.test(lines[index])) {
+            codeLines.push(lines[index]);
+            index += 1;
+          }
+          if (index < lines.length) index += 1;
+          blocks.push(h(CodeBlock, { key: nextKey(), t, code: codeLines.join('\n'), language }));
+          continue;
+        }
+        const heading = /^\s*(#{1,6})\s+(.*)$/.exec(line);
+        if (heading !== null) {
+          const level = heading[1].length;
+          const tag = level <= 1 ? 'h3' : level === 2 ? 'h4' : 'h5';
+          blocks.push(
+            h(
+              tag,
+              { key: nextKey(), className: 'ls-yuan-md-heading ls-yuan-md-heading--' + level },
+              renderInline(heading[2].trim()),
+            ),
+          );
+          index += 1;
+          continue;
+        }
+        if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+          blocks.push(h('hr', { key: nextKey(), className: 'ls-yuan-md-hr' }));
+          index += 1;
+          continue;
+        }
+        if (/^\s*>/.test(line)) {
+          const quoteLines = [];
+          while (index < lines.length && /^\s*>/.test(lines[index])) {
+            quoteLines.push(lines[index].replace(/^\s*>\s?/, ''));
+            index += 1;
+          }
+          blocks.push(
+            h('blockquote', { key: nextKey(), className: 'ls-yuan-md-quote' }, renderInline(quoteLines.join('\n'))),
+          );
+          continue;
+        }
+        if (/^(\s*)([-*+]|\d+[.)])\s+/.test(line)) {
+          const firstMatch = /^(\s*)([-*+]|\d+[.)])\s+/.exec(line);
+          const ordered = firstMatch !== null && /^\d/.test(firstMatch[2]);
+          const items = [];
+          while (index < lines.length) {
+            const itemMatch = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[index]);
+            if (itemMatch === null) break;
+            const indent = Math.min(3, Math.floor(itemMatch[1].replace(/\t/g, '  ').length / 2));
+            const body = itemMatch[3];
+            const task = /^\[([ xX])\]\s*(.*)$/.exec(body);
+            let content;
+            if (task !== null) {
+              const checked = task[1] !== ' ';
+              content = h(
+                'span',
+                { className: 'ls-yuan-task' + (checked ? ' ls-yuan-task--done' : '') },
+                h(
+                  'span',
+                  { className: 'ls-yuan-task__box', 'aria-hidden': 'true' },
+                  h(CheckIcon, { mode: checked ? 'done' : 'open' }),
+                ),
+                h('span', null, renderInline(task[2])),
+              );
+            } else {
+              content = h('span', null, renderInline(body));
+            }
+            items.push(
+              h(
+                'li',
+                {
+                  key: nextKey(),
+                  className: 'ls-yuan-md-li',
+                  style: indent > 0 ? { marginLeft: indent * 14 + 'px' } : undefined,
+                },
+                content,
+              ),
+            );
+            index += 1;
+          }
+          blocks.push(h(ordered ? 'ol' : 'ul', { key: nextKey(), className: 'ls-yuan-md-list' }, items));
+          continue;
+        }
+        const paragraphLines = [];
+        while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+          paragraphLines.push(lines[index]);
+          index += 1;
+        }
+        if (paragraphLines.length === 0) {
+          index += 1;
+          continue;
+        }
+        blocks.push(h('p', { key: nextKey(), className: 'ls-yuan-md-p' }, renderInline(paragraphLines.join('\n'))));
+      }
+      return blocks;
+    }
+
+    function MarkdownView({ t, text }) {
+      return h('div', { className: 'ls-yuan-markdown' }, renderMarkdown(text, t));
+    }
+
     function YuanSuggestionItem({ t, item, onAccept, onDismiss }) {
       const reasons = item !== null && typeof item === 'object' && Array.isArray(item.reasons) ? item.reasons : EMPTY;
       const source = yuanSourceLabel(item, t);
       const id = item !== null && typeof item === 'object' && typeof item.id === 'string' ? item.id : '';
       return h(
         'article',
-        { className: 'ls-yuan-card' },
+        { className: 'ls-yuan-card ls-yuan-toolcard' },
+        h(
+          'div',
+          { className: 'ls-yuan-toolcard__head' },
+          h(
+            'span',
+            { className: 'ls-yuan-toolcard__icon', 'aria-hidden': 'true' },
+            h(
+              'svg',
+              { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+              h('path', {
+                d: 'M8 1.8a4.3 4.3 0 0 1 2.6 7.7c-.5.4-.8 1-.8 1.6H6.2c0-.6-.3-1.2-.8-1.6A4.3 4.3 0 0 1 8 1.8z',
+                stroke: 'currentColor',
+                strokeWidth: 1.3,
+                strokeLinejoin: 'round',
+              }),
+              h('path', {
+                d: 'M6.5 13h3M7.2 14.5h1.6',
+                stroke: 'currentColor',
+                strokeWidth: 1.2,
+                strokeLinecap: 'round',
+              }),
+            ),
+          ),
+          h('span', { className: 'ls-yuan-toolcard__tag' }, t('yuanSuggestionTag')),
+          source !== '' ? h('span', { className: 'ls-yuan-toolcard__source' }, source) : null,
+        ),
         h('div', { className: 'ls-yuan-card__text' }, item !== null && typeof item.text === 'string' ? item.text : ''),
-        source !== '' ? h('div', { className: 'ls-yuan-card__meta' }, source) : null,
         reasons.length > 0
           ? h(
               'div',
@@ -634,6 +923,7 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState('');
       const [notice, setNotice] = useState(null);
       const chatRef = useRef(null);
+      const textareaRef = useRef(null);
       const sectionRefs = useRef({});
       const chat = store.state !== null && Array.isArray(store.state.chat) ? store.state.chat : EMPTY;
       useEffect(() => {
@@ -646,6 +936,14 @@ window.__ModuleLoader__.load({
         const node = chatRef.current;
         if (node !== null && node !== undefined) node.scrollTop = node.scrollHeight;
       }, [chat.length, store.sending]);
+      // Auto-grow the composer between one and six lines.
+      useEffect(() => {
+        const node = textareaRef.current;
+        if (node === null || node === undefined || typeof node.style !== 'object') return;
+        node.style.height = 'auto';
+        const height = Math.min(typeof node.scrollHeight === 'number' ? node.scrollHeight : 0, 6 * 22);
+        if (height > 0) node.style.height = height + 'px';
+      }, [draft]);
       if (store.open !== true) return null;
       const state = store.state;
       const suggestions = pendingSuggestions(state !== null ? state.suggestions : EMPTY);
@@ -686,12 +984,18 @@ window.__ModuleLoader__.load({
           setNotice(result !== null ? t('yuanDismissed') : null);
         });
       };
-      const submit = () => {
-        const text = draft.trim();
+      const sendText = (value) => {
+        const text = typeof value === 'string' ? value.trim() : '';
         if (text === '' || store.sending) return;
         setDraft('');
         store.send(text);
       };
+      const submit = () => sendText(draft);
+      const modelBadgeText =
+        model !== null && model.available === true
+          ? [model.provider, model.model].filter((value) => typeof value === 'string' && value !== '').join('/')
+          : '';
+      const quickTexts = [t('yuanQuick1'), t('yuanQuick2'), t('yuanQuick3')];
       const signalChip = (kind, labelKey, sectionKey) => {
         const tone = signalTone(kind);
         const count = kind === 'suggestion' ? counts.suggestion : kind === 'reminder' ? counts.reminder : counts.deadline;
@@ -729,7 +1033,7 @@ window.__ModuleLoader__.load({
           ),
         ),
         notice !== null ? h('div', { className: 'ls-yuan-notice' }, notice) : null,
-        store.error !== null
+        store.error !== null && store.failedText === null
           ? h(
               'div',
               { className: 'ls-yuan-error' },
@@ -805,44 +1109,149 @@ window.__ModuleLoader__.load({
           'section',
           { ref: (node) => { sectionRefs.current.chat = node; }, className: 'ls-yuan-section' },
           h('div', { className: 'ls-yuan-section__title' }, h('span', null, t('yuanChatSection')), h('span', { className: 'ls-yuan-pagecard__count' }, String(chat.length))),
-          chat.length === 0
-            ? h('div', { className: 'ls-yuan-empty' }, t('yuanChatEmpty'))
-            : h(
-                'div',
-                { ref: (node) => { chatRef.current = node; }, className: 'ls-yuan-chat' },
-                chat.slice(-30).map((message, index) => {
+          h(
+            'div',
+            { ref: (node) => { chatRef.current = node; }, className: 'ls-yuan-chat' },
+            chat.length === 0 && !store.sending
+              ? h(
+                  'div',
+                  { className: 'ls-yuan-welcome', 'aria-label': t('yuanChatEmpty') },
+                  h('div', { className: 'ls-yuan-welcome__text' }, t('yuanWelcome')),
+                  h(
+                    'div',
+                    { className: 'ls-yuan-quick' },
+                    h('span', { className: 'ls-yuan-quick__hint' }, t('yuanQuickHint')),
+                    quickTexts.map((text, index) =>
+                      h(
+                        'button',
+                        {
+                          key: 'quick-' + index,
+                          type: 'button',
+                          className: 'ls-yuan-quick__chip',
+                          onClick: () => sendText(text),
+                        },
+                        text,
+                      ),
+                    ),
+                  ),
+                )
+              : chat.slice(-30).map((message, index) => {
                   const role = yuanMessageRole(message);
+                  const messageText = yuanMessageText(message);
                   const proposals = yuanProposalList(message !== null && typeof message === 'object' ? message.proposals : null);
+                  const messageKey = message !== null && typeof message.id === 'string' ? message.id : 'msg-' + index;
+                  const time = message !== null && typeof message === 'object' ? formatStamp(message.at) : '';
+                  if (role === 'assistant') {
+                    return h(
+                      'div',
+                      { key: messageKey, className: 'ls-yuan-msgrow ls-yuan-msgrow--assistant' },
+                      h('span', { className: 'ls-yuan-avatar', 'aria-hidden': 'true' }, '\u6e90'),
+                      h(
+                        'div',
+                        { className: 'ls-yuan-msgbody' },
+                        h(
+                          'div',
+                          { className: 'ls-yuan-msghead' },
+                          h('span', { className: 'ls-yuan-msgname' }, t('yuanAssistant')),
+                          modelBadgeText !== '' ? h('span', { className: 'ls-yuan-model' }, modelBadgeText) : null,
+                          time !== '' ? h('span', { className: 'ls-yuan-msgtime' }, time) : null,
+                          h(CopyButton, { t, text: messageText, className: 'ls-yuan-copy--assistant' }),
+                        ),
+                        h('div', { className: 'ls-yuan-msgtext' }, h(MarkdownView, { t, text: messageText })),
+                        proposals.length > 0
+                          ? h(
+                              'div',
+                              { className: 'ls-yuan-proposals' },
+                              proposals.slice(0, 4).map((proposal, proposalIndex) =>
+                                h(
+                                  'div',
+                                  { key: 'proposal-' + proposalIndex, className: 'ls-yuan-proposal' },
+                                  h('span', null, yuanProposalLabel(proposal, t)),
+                                  proposal !== null &&
+                                    typeof proposal === 'object' &&
+                                    typeof proposal.id === 'string' &&
+                                    proposal.kind === 'todo'
+                                    ? h(
+                                        'button',
+                                        { type: 'button', className: 'ls-yuan-btn', onClick: () => accept(proposal.id) },
+                                        t('yuanAccept'),
+                                      )
+                                    : null,
+                                ),
+                              ),
+                            )
+                          : null,
+                      ),
+                    );
+                  }
                   return h(
                     'div',
-                    { key: message !== null && typeof message.id === 'string' ? message.id : 'msg-' + index, className: 'ls-yuan-msg ls-yuan-msg--' + role },
-                    h('span', null, yuanMessageText(message)),
-                    proposals.length > 0
-                      ? h(
-                          'span',
-                          { className: 'ls-yuan-proposals' },
-                          proposals.slice(0, 4).map((proposal, proposalIndex) =>
-                            h(
-                              'span',
-                              { key: 'proposal-' + proposalIndex, className: 'ls-yuan-proposal' },
-                              h('span', null, yuanProposalLabel(proposal, t)),
-                              proposal !== null && typeof proposal === 'object' && typeof proposal.id === 'string' && proposal.kind === 'todo'
-                                ? h('button', { type: 'button', className: 'ls-yuan-btn', onClick: () => accept(proposal.id) }, t('yuanAccept'))
-                                : null,
-                            ),
-                          ),
-                        )
-                      : null,
+                    {
+                      key: messageKey,
+                      className: 'ls-yuan-msgrow ls-yuan-msgrow--user',
+                      'aria-label': t('yuanYou'),
+                    },
                     h(
-                      'span',
-                      { className: 'ls-yuan-msg__meta' },
-                      role === 'assistant' ? t('yuanAssistant') : t('yuanYou'),
-                      typeof message === 'object' && message !== null ? formatStamp(message.at) : '',
+                      'div',
+                      { className: 'ls-yuan-msgbody ls-yuan-msgbody--user' },
+                      h('div', { className: 'ls-yuan-bubble' }, messageText),
+                      h(
+                        'div',
+                        { className: 'ls-yuan-msghead ls-yuan-msghead--user' },
+                        time !== '' ? h('span', { className: 'ls-yuan-msgtime' }, time) : null,
+                        h(CopyButton, { t, text: messageText, className: 'ls-yuan-copy--user' }),
+                      ),
                     ),
                   );
                 }),
-              ),
-          store.sending ? h('div', { className: 'ls-yuan-thinking' }, t('yuanThinking')) : null,
+            store.sending
+              ? h(
+                  'div',
+                  { className: 'ls-yuan-msgrow ls-yuan-msgrow--assistant' },
+                  h('span', { className: 'ls-yuan-avatar', 'aria-hidden': 'true' }, '\u6e90'),
+                  h(
+                    'div',
+                    { className: 'ls-yuan-msgbody' },
+                    h(
+                      'div',
+                      { className: 'ls-yuan-msghead' },
+                      h('span', { className: 'ls-yuan-msgname' }, t('yuanAssistant')),
+                      modelBadgeText !== '' ? h('span', { className: 'ls-yuan-model' }, modelBadgeText) : null,
+                    ),
+                    h(
+                      'div',
+                      { className: 'ls-yuan-thinking' },
+                      h(
+                        'span',
+                        { className: 'ls-yuan-dots', 'aria-hidden': 'true' },
+                        [0, 1, 2].map((dot) => h('span', { key: 'dot-' + dot, className: 'ls-yuan-dots__dot' })),
+                      ),
+                      t('yuanThinking'),
+                    ),
+                  ),
+                )
+              : null,
+            store.failedText !== null && !store.sending
+              ? h(
+                  'div',
+                  { className: 'ls-yuan-retry' },
+                  h(
+                    'span',
+                    { className: 'ls-yuan-retry__text' },
+                    t('yuanSendFailed') + (store.error !== null ? ': ' + store.error : ''),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ls-yuan-btn',
+                      onClick: () => store.send(store.failedText, { retry: true }),
+                    },
+                    t('yuanRetrySend'),
+                  ),
+                )
+              : null,
+          ),
         ),
         h(
           'section',
@@ -869,34 +1278,77 @@ window.__ModuleLoader__.load({
               : h(
                   'div',
                   { className: 'ls-yuan-memory' },
-                  memory.slice(0, 20).map((item, index) =>
-                    h(
-                      'span',
-                      { key: item !== null && typeof item.id === 'string' ? item.id : 'mem-' + index, className: 'ls-yuan-mem' },
-                      h('span', { className: 'ls-yuan-mem__text' }, item !== null && typeof item.text === 'string' ? item.text : ''),
+                  memory.slice(0, 20).map((item, index) => {
+                    const id = item !== null && typeof item.id === 'string' ? item.id : '';
+                    const pending = item !== null && typeof item === 'object' && item.status === 'pending';
+                    return h(
+                      'div',
+                      {
+                        key: id !== '' ? id : 'mem-' + index,
+                        className: 'ls-yuan-memcard' + (pending ? ' ls-yuan-memcard--pending' : ''),
+                      },
                       h(
-                        'button',
-                        {
-                          type: 'button',
-                          className: 'ls-yuan-mem__del',
-                          title: t('yuanMemoryDelete'),
-                          'aria-label': t('yuanMemoryDelete'),
-                          onClick: () => store.deleteMemory(item !== null && typeof item.id === 'string' ? item.id : ''),
-                        },
-                        '\u00d7',
+                        'div',
+                        { className: 'ls-yuan-memcard__main' },
+                        h(
+                          'span',
+                          { className: 'ls-yuan-memcard__text' },
+                          item !== null && typeof item.text === 'string' ? item.text : '',
+                        ),
+                        pending
+                          ? h('span', { className: 'ls-yuan-badge ls-yuan-badge--pending' }, t('yuanMemoryPending'))
+                          : null,
                       ),
-                    ),
-                  ),
+                      h(
+                        'div',
+                        { className: 'ls-yuan-actions' },
+                        pending
+                          ? h(
+                              'button',
+                              {
+                                type: 'button',
+                                className: 'ls-yuan-btn',
+                                onClick: () => store.acceptMemory(id),
+                              },
+                              t('yuanMemoryConfirm'),
+                            )
+                          : null,
+                        h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'ls-yuan-mem__del',
+                            title: t('yuanMemoryDelete'),
+                            'aria-label': t('yuanMemoryDelete'),
+                            onClick: () => store.deleteMemory(id),
+                          },
+                          '\u00d7',
+                        ),
+                      ),
+                    );
+                  }),
                 )
             : null,
-          h('span', { className: 'ls-yuan-hint' }, t('yuanRememberHint')),
+          h(
+            'div',
+            { className: 'ls-yuan-memory-actions' },
+            h(
+              'button',
+              { type: 'button', className: 'ls-yuan-chip', onClick: () => setDraft(t('yuanMemoryAdd')) },
+              t('yuanMemoryAdd'),
+            ),
+            h('span', { className: 'ls-yuan-hint' }, t('yuanRememberHint')),
+          ),
         ),
         h(
           'div',
           { className: 'ls-yuan-composer' },
           h('textarea', {
+            ref: (node) => {
+              textareaRef.current = node;
+            },
             className: 'ls-yuan-input',
-            rows: 1,
+            rows: Math.min(6, Math.max(1, draft.split('\n').length)),
             value: draft,
             placeholder: t('yuanInputPlaceholder'),
             'aria-label': t('yuanInputPlaceholder'),
@@ -912,13 +1364,27 @@ window.__ModuleLoader__.load({
             'button',
             {
               type: 'button',
-              className: 'ls-yuan-btn ls-yuan-btn--primary',
+              className: 'ls-yuan-send',
+              title: store.sending ? t('yuanSending') : t('yuanSend'),
+              'aria-label': store.sending ? t('yuanSending') : t('yuanSend'),
               disabled: store.sending || draft.trim() === '',
               onClick: submit,
             },
-            store.sending ? t('yuanThinking') : t('yuanSend'),
+            h(
+              'svg',
+              { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+              h('path', { d: 'M8 13V3.4', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round' }),
+              h('path', {
+                d: 'M3.8 7.4L8 3.2l4.2 4.2',
+                stroke: 'currentColor',
+                strokeWidth: 1.6,
+                strokeLinecap: 'round',
+                strokeLinejoin: 'round',
+              }),
+            ),
           ),
         ),
+        h('div', { className: 'ls-yuan-composer-hint' }, t('yuanComposerHint')),
       );
     }
 
@@ -1048,7 +1514,7 @@ window.__ModuleLoader__.load({
       yuanReminderExpired: '已过期',
       yuanChatSection: '对话',
       yuanChatEmpty: '还没有对话，问阿源点什么吧',
-      yuanThinking: '阿源正在想…',
+      yuanThinking: '阿源正在思考…',
       yuanInputPlaceholder: '问阿源…（Enter 发送，Shift+Enter 换行）',
       yuanSend: '发送',
       yuanYou: '你',
@@ -1069,6 +1535,22 @@ window.__ModuleLoader__.load({
       yuanExpandMemory: '展开记忆',
       yuanCollapseMemory: '收起记忆',
       yuanSignalEmpty: '暂无信号',
+      yuanWelcome: '你好，我是阿源。看板上的事都可以问我。',
+      yuanQuickHint: '试着问：',
+      yuanQuick1: '今天先做哪三件？',
+      yuanQuick2: '记住：我晚上不看新任务',
+      yuanQuick3: '提醒我周五交报告',
+      yuanSending: '发送中…',
+      yuanRetrySend: '重试发送',
+      yuanSendFailed: '发送失败',
+      yuanCopy: '复制',
+      yuanCopied: '已复制',
+      yuanCopyCode: '复制代码',
+      yuanSuggestionTag: '建议',
+      yuanMemoryPending: '待确认',
+      yuanMemoryConfirm: '确认',
+      yuanMemoryAdd: '记住：…',
+      yuanComposerHint: 'Enter 发送 · Shift+Enter 换行',
       obsidianCardTitle: '数据源 · Obsidian 自动发现',
       obsidianCardHint: '自动发现含 .obsidian 的笔记库，并管理识别规则',
       obsidianAutoDetect: '自动发现',
@@ -1241,6 +1723,22 @@ window.__ModuleLoader__.load({
       yuanExpandMemory: 'Expand memory',
       yuanCollapseMemory: 'Collapse memory',
       yuanSignalEmpty: 'No signals',
+      yuanWelcome: 'Hi, I am Yuan. Ask me anything about your board.',
+      yuanQuickHint: 'Try asking:',
+      yuanQuick1: 'What should I do first today?',
+      yuanQuick2: 'Remember: I do not check new tasks at night',
+      yuanQuick3: 'Remind me to submit the report on Friday',
+      yuanSending: 'Sending…',
+      yuanRetrySend: 'Retry sending',
+      yuanSendFailed: 'Message failed',
+      yuanCopy: 'Copy',
+      yuanCopied: 'Copied',
+      yuanCopyCode: 'Copy code',
+      yuanSuggestionTag: 'Suggestion',
+      yuanMemoryPending: 'Pending',
+      yuanMemoryConfirm: 'Confirm',
+      yuanMemoryAdd: 'Remember: …',
+      yuanComposerHint: 'Enter to send · Shift+Enter for newline',
       obsidianCardTitle: 'Data sources · Obsidian auto-detect',
       obsidianCardHint: 'Auto-detect vaults containing .obsidian and manage parsing rules',
       obsidianAutoDetect: 'Auto-detect',
@@ -1533,6 +2031,78 @@ window.__ModuleLoader__.load({
 .ls-obs-btn--primary{border-color:transparent;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
 .ls-obs-btn--primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);opacity:.9}
 @media (max-width:720px){.ls-obs-rules{grid-template-columns:1fr}}
+.ls-yuan-msgrow{display:flex;align-items:flex-start;gap:8px;max-width:100%}
+.ls-yuan-msgrow--user{justify-content:flex-end}
+.ls-yuan-avatar{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,transparent);color:var(--dsw-alias-brand-primary);font-size:11px;font-weight:600;flex:none;margin-top:2px}
+.ls-yuan-msgbody{display:flex;flex-direction:column;gap:4px;min-width:0;max-width:calc(100% - 34px)}
+.ls-yuan-msgbody--user{max-width:82%;align-items:flex-end}
+.ls-yuan-msghead{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-msghead--user{justify-content:flex-end}
+.ls-yuan-msgname{font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+.ls-yuan-model{font-size:9px;line-height:14px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.ls-yuan-msgtime{font-variant-numeric:tabular-nums}
+.ls-yuan-msgtext{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word;min-width:0}
+.ls-yuan-bubble{max-width:100%;padding:6px 10px;border-radius:var(--dsw-radius-md);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-label-primary);font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+.ls-yuan-copy{display:inline-flex;align-items:center;justify-content:center;height:18px;padding:0 6px;border:none;border-radius:999px;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:9px;line-height:18px;cursor:pointer;opacity:0;transition:opacity .12s ease}
+.ls-yuan-msgrow:hover .ls-yuan-copy{opacity:1}
+.ls-yuan-copy:focus-visible{opacity:1;outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-yuan-markdown{display:flex;flex-direction:column;gap:5px;min-width:0}
+.ls-yuan-md-p{margin:0;font-size:12px;line-height:1.65}
+.ls-yuan-md-heading{margin:2px 0 0;font-weight:600;color:var(--dsw-alias-label-primary)}
+.ls-yuan-md-heading--1{font-size:14px}
+.ls-yuan-md-heading--2{font-size:13px}
+.ls-yuan-md-heading--3,.ls-yuan-md-heading--4,.ls-yuan-md-heading--5,.ls-yuan-md-heading--6{font-size:12px}
+.ls-yuan-md-list{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:2px;font-size:12px;line-height:1.55}
+.ls-yuan-md-li{word-break:break-word}
+.ls-yuan-md-quote{margin:0;padding:2px 0 2px 10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.6}
+.ls-yuan-md-hr{width:100%;margin:4px 0;border:none;border-top:1px solid var(--dsw-alias-border-l1)}
+.ls-yuan-inline-code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;padding:1px 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-link{color:var(--dsw-alias-brand-primary);text-decoration:none}
+.ls-yuan-link:hover{text-decoration:underline}
+.ls-yuan-task{display:inline-flex;align-items:flex-start;gap:5px}
+.ls-yuan-task--done{color:var(--dsw-alias-label-secondary);text-decoration:line-through}
+.ls-yuan-task__box{display:inline-flex;flex:none;color:var(--dsw-alias-label-tertiary);margin-top:1px}
+.ls-yuan-task--done .ls-yuan-task__box{color:var(--dsw-alias-state-success-primary)}
+.ls-yuan-code{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);overflow:hidden}
+.ls-yuan-code__head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:22px;padding:2px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
+.ls-yuan-code__lang{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-code-copy{font:inherit;font-size:10px;line-height:18px;padding:0 6px;border:none;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.ls-yuan-code-copy:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+.ls-yuan-code-copy:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-yuan-code__pre{margin:0;padding:8px 10px;overflow-x:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.55;color:var(--dsw-alias-label-primary)}
+.ls-yuan-welcome{display:flex;flex-direction:column;gap:8px}
+.ls-yuan-welcome__text{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-secondary)}
+.ls-yuan-quick{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
+.ls-yuan-quick__hint{font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-quick__chip{font:inherit;font-size:10px;line-height:20px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.ls-yuan-quick__chip:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-quick__chip:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-yuan-thinking{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.ls-yuan-dots{display:inline-flex;align-items:center;gap:3px}
+.ls-yuan-dots__dot{width:4px;height:4px;border-radius:50%;background:var(--dsw-alias-label-tertiary);animation:ls-yuan-dot 1.1s ease-in-out infinite}
+.ls-yuan-dots__dot:nth-child(2){animation-delay:.15s}
+.ls-yuan-dots__dot:nth-child(3){animation-delay:.3s}
+.ls-yuan-retry{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 8px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 40%,var(--dsw-alias-border-l1));border-radius:var(--dsw-radius-sm);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent);font-size:11px;color:var(--dsw-alias-state-error-primary)}
+.ls-yuan-toolcard{gap:5px}
+.ls-yuan-toolcard__head{display:flex;align-items:center;gap:6px;min-width:0}
+.ls-yuan-toolcard__icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:var(--dsw-radius-xs);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent);color:var(--dsw-alias-brand-primary);flex:none}
+.ls-yuan-toolcard__tag{font-size:10px;font-weight:600;line-height:16px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.ls-yuan-toolcard__source{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-memcard{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2)}
+.ls-yuan-memcard--pending{border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 45%,var(--dsw-alias-border-l1))}
+.ls-yuan-memcard__main{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.ls-yuan-memcard__text{font-size:11px;color:var(--dsw-alias-label-secondary);word-break:break-word}
+.ls-yuan-badge{font-size:9px;line-height:14px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.ls-yuan-badge--pending{color:var(--dsw-alias-state-warn-primary);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 12%,transparent)}
+.ls-yuan-memory{display:flex;flex-direction:column;gap:4px}
+.ls-yuan-memory-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:6px}
+.ls-yuan-input{max-height:132px}
+.ls-yuan-send{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;border:none;border-radius:999px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);cursor:pointer;flex:none}
+.ls-yuan-send:hover:not(:disabled){opacity:.9}
+.ls-yuan-send:disabled{opacity:.45;cursor:default}
+.ls-yuan-send:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:2px}
+.ls-yuan-composer-hint{margin-top:2px;font-size:10px;color:var(--dsw-alias-label-tertiary);text-align:right}
+@keyframes ls-yuan-dot{0%,80%,100%{opacity:.35;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
 @media (max-width:720px){.ls-yuan-panel{max-height:60vh}.ls-yuan-pagecard{padding:12px}}
 @keyframes ls-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 @keyframes ls-pulse{0%,100%{opacity:.55}50%{opacity:1}}
