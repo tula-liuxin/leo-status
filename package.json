@@ -1,9 +1,9 @@
 {
   "name": "leo-status",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Leo 状态看板：聚合多来源 TODO（Obsidian/DSH 会话），支持多设备加入中心、设备区分与简单密码认证，并可在看板上作废/启用/删除本地笔记里的 todo。",
+  "description": "Leo 状态看板：自动发现 Obsidian/DSH 会话 TODO，多设备加入中心与简单密码认证；新增管家「阿源」——会话建议需 accept、对话记忆、红点提醒。",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -17,11 +17,25 @@
     "sync.js",
     "hub.js",
     "edit.js",
+    "suggest.js",
+    "yuan.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "CONTRACT-V4.md"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "todo",
+    "status",
+    "obsidian",
+    "multi-device",
+    "yuan",
+    "agent"
   ],
   "dsh": {
     "bundle": {

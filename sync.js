@@ -37,6 +37,10 @@ const TODO_WHITELIST = [
   'sessionId',
   'sessionTitle',
   'project',
+  'discoveredBy',
+  'writable',
+  'confidence',
+  'headingStatus',
 ]
 
 function trimBase(baseUrl) {

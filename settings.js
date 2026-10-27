@@ -13,13 +13,39 @@ import { promises as fsp } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
-export const SETTINGS_VERSION = 1
+export const SETTINGS_VERSION = 2
 
 const DEFAULT_SYNC_INTERVAL_MS = 60_000
 const DEFAULT_HUB_PORT = 8790
 const DEFAULT_TUNNEL_REMOTE_PORT = 18899
 const DEFAULT_TUNNEL_SSH_TARGET = 'sh'
 const DEFAULT_HUB_URL = 'https://dsh.agencyarche.com/leo-status'
+
+export const DEFAULT_CONVENTIONS = Object.freeze({
+  checkbox: true,
+  tagLines: true,
+  tags: Object.freeze(['todo', 'task', '待办', 'TODO']),
+  frontmatter: true,
+  frontmatterList: true,
+  markers: false,
+  markerWords: Object.freeze(['TODO', '待办', 'FIXME']),
+  headingStatus: true,
+})
+
+export const DEFAULT_SESSION_FILTER = Object.freeze({
+  enabled: true,
+  acceptScore: 0.55,
+  reviewScore: 0.35,
+  skipSubagentSessions: true,
+})
+
+export const DEFAULT_YUAN = Object.freeze({
+  enabled: true,
+  name: '阿源',
+  model: null,
+  maxHistory: 30,
+  maxMemory: 40,
+})
 
 /** dataDir：row config → 环境变量 → 平台默认。 */
 export function resolveDataDir(rowConfig = {}) {
@@ -65,6 +91,18 @@ export function defaultSettings() {
       hubUrl: DEFAULT_HUB_URL,
       password: '',
     },
+    obsidian: {
+      autoDetect: true,
+      searchRoots: [],
+      maxDepth: 4,
+      conventions: {
+        ...DEFAULT_CONVENTIONS,
+        tags: [...DEFAULT_CONVENTIONS.tags],
+        markerWords: [...DEFAULT_CONVENTIONS.markerWords],
+      },
+    },
+    sessionFilter: { ...DEFAULT_SESSION_FILTER },
+    yuan: { ...DEFAULT_YUAN },
   }
 }
 
@@ -129,6 +167,58 @@ export function normalizeSettings(raw) {
   settings.device.name = String(settings.device.name || settings.deviceName).slice(0, 60)
   settings.device.hubUrl = typeof settings.device.hubUrl === 'string' ? settings.device.hubUrl : DEFAULT_HUB_URL
   settings.device.password = typeof settings.device.password === 'string' ? settings.device.password : ''
+
+  // ---- v0.4：Obsidian 自动发现 / 会话精筛 / 阿源 ----
+  settings.obsidian.autoDetect = settings.obsidian.autoDetect !== false
+  settings.obsidian.searchRoots = Array.isArray(settings.obsidian.searchRoots)
+    ? settings.obsidian.searchRoots.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim())
+    : []
+  const maxDepth = Number(settings.obsidian.maxDepth)
+  settings.obsidian.maxDepth = Number.isFinite(maxDepth) && maxDepth >= 1 ? Math.min(Math.floor(maxDepth), 8) : 4
+
+  const conventions = merge(DEFAULT_CONVENTIONS, isPlainObject(settings.obsidian.conventions) ? settings.obsidian.conventions : {})
+  conventions.checkbox = conventions.checkbox !== false
+  conventions.tagLines = conventions.tagLines !== false
+  conventions.frontmatter = conventions.frontmatter !== false
+  conventions.frontmatterList = conventions.frontmatterList !== false
+  conventions.markers = conventions.markers === true
+  conventions.headingStatus = conventions.headingStatus !== false
+  conventions.tags = Array.isArray(conventions.tags)
+    ? conventions.tags.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim())
+    : [...DEFAULT_CONVENTIONS.tags]
+  if (conventions.tags.length === 0) conventions.tags = [...DEFAULT_CONVENTIONS.tags]
+  conventions.markerWords = Array.isArray(conventions.markerWords)
+    ? conventions.markerWords.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim())
+    : [...DEFAULT_CONVENTIONS.markerWords]
+  if (conventions.markerWords.length === 0) conventions.markerWords = [...DEFAULT_CONVENTIONS.markerWords]
+  settings.obsidian.conventions = conventions
+
+  settings.sessionFilter.enabled = settings.sessionFilter.enabled !== false
+  const acceptScore = Number(settings.sessionFilter.acceptScore)
+  const reviewScore = Number(settings.sessionFilter.reviewScore)
+  settings.sessionFilter.acceptScore = Number.isFinite(acceptScore) ? Math.min(1, Math.max(0, acceptScore)) : DEFAULT_SESSION_FILTER.acceptScore
+  settings.sessionFilter.reviewScore = Number.isFinite(reviewScore) ? Math.min(1, Math.max(0, reviewScore)) : DEFAULT_SESSION_FILTER.reviewScore
+  if (settings.sessionFilter.reviewScore > settings.sessionFilter.acceptScore) {
+    settings.sessionFilter.reviewScore = settings.sessionFilter.acceptScore
+  }
+  settings.sessionFilter.skipSubagentSessions = settings.sessionFilter.skipSubagentSessions !== false
+
+  settings.yuan.enabled = settings.yuan.enabled !== false
+  settings.yuan.name = String(settings.yuan.name || DEFAULT_YUAN.name).slice(0, 20)
+  const yuanModel = settings.yuan.model
+  settings.yuan.model =
+    isPlainObject(yuanModel) && typeof yuanModel.provider === 'string' && yuanModel.provider.trim() !== '' && typeof yuanModel.model === 'string' && yuanModel.model.trim() !== ''
+      ? {
+          provider: yuanModel.provider.trim(),
+          model: yuanModel.model.trim(),
+          ...(typeof yuanModel.reasoningEffort === 'string' && yuanModel.reasoningEffort !== '' ? { reasoningEffort: yuanModel.reasoningEffort } : {}),
+        }
+      : null
+  const maxHistory = Number(settings.yuan.maxHistory)
+  const maxMemory = Number(settings.yuan.maxMemory)
+  settings.yuan.maxHistory = Number.isFinite(maxHistory) ? Math.min(100, Math.max(5, Math.floor(maxHistory))) : DEFAULT_YUAN.maxHistory
+  settings.yuan.maxMemory = Number.isFinite(maxMemory) ? Math.min(200, Math.max(5, Math.floor(maxMemory))) : DEFAULT_YUAN.maxMemory
+
   settings.version = SETTINGS_VERSION
   return settings
 }
@@ -165,11 +255,18 @@ export async function saveSettings(dataDir, settings) {
  * 有效扫描配置：DEFAULTS ← row config ← settings。
  * 仅 settings 管得到的字段用 settings；其余字段以 row config 为准。
  */
-export function effectiveScanConfig(rowConfig = {}, settings = defaultSettings()) {
+export function effectiveScanConfig(rowConfig = {}, settings = defaultSettings(), dataDir = null) {
   const base = { ...(isPlainObject(rowConfig) ? rowConfig : {}) }
   if (settings.markdownRoots.length > 0) base.markdownRoots = settings.markdownRoots
   else if (base.markdownRoots === undefined) base.markdownRoots = []
   base.includeDshTodos = settings.includeDshTodos
   base.includeDshCompleted = settings.includeDshCompleted
+  base.conventions = settings.obsidian.conventions
+  base.autoDetect = settings.obsidian.autoDetect
+  base.searchRoots = settings.obsidian.searchRoots
+  base.vaultMaxDepth = settings.obsidian.maxDepth
+  if (typeof dataDir === 'string' && dataDir !== '') {
+    base.cacheFile = path.join(dataDir, 'cache', 'scan-cache.json')
+  }
   return base
 }

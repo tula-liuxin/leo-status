@@ -2,6 +2,7 @@ node_modules/
 settings.json
 *.tgz
 data/
+_scan/
 
 __pycache__/
 *.pyc

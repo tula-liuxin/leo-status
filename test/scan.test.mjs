@@ -41,6 +41,10 @@ const TODO_KEYS = [
   'sessionId',
   'sessionTitle',
   'project',
+  'discoveredBy',
+  'writable',
+  'confidence',
+  'headingStatus',
 ];
 
 const SNAPSHOT_KEYS = [
@@ -51,6 +55,7 @@ const SNAPSHOT_KEYS = [
   'sources',
   'todos',
   'stats',
+  'meta',
   'config',
 ];
 
@@ -129,6 +134,20 @@ test('DEFAULTS 与 §4 完全一致，EMPTY_STATS 是冻结的全零统计', () 
     maxFiles: 20_000,
     dshMaxSessions: 300,
     cacheTtlMs: 15_000,
+    conventions: {
+      checkbox: true,
+      tagLines: true,
+      tags: ['todo', 'task', '待办', 'TODO'],
+      frontmatter: true,
+      frontmatterList: true,
+      markers: false,
+      markerWords: ['TODO', '待办', 'FIXME'],
+      headingStatus: true,
+    },
+    autoDetect: true,
+    searchRoots: [],
+    vaultMaxDepth: 4,
+    cacheFile: '',
   });
 
   assert.deepEqual(EMPTY_STATS, {
@@ -140,6 +159,7 @@ test('DEFAULTS 与 §4 完全一致，EMPTY_STATS 是冻结的全零统计', () 
     dueToday: 0,
     dueSoon: 0,
     undated: 0,
+    discovered: { checkbox: 0, tag: 0, frontmatter: 0, marker: 0 },
   });
   assert.ok(Object.isFrozen(EMPTY_STATS));
 });
@@ -617,6 +637,7 @@ test('markdown root 不存在：不抛错，source.error 有说明', async () =>
       dueToday: 0,
       dueSoon: 0,
       undated: 0,
+      discovered: { checkbox: 0, tag: 0, frontmatter: 0, marker: 0 },
     });
   });
 });
@@ -674,7 +695,7 @@ test('DSH todos：pending/in_progress 映射、坏 JSON/非数组缺字段全容
       const vaultDir = path.join(dir, 'vault');
       const dshDir = path.join(dir, 'dsh');
       const snapshot = await aggregate(
-        { markdownRoots: [], includeDshTodos: true, dshCacheDir: dshDir, cacheTtlMs: 0 },
+        { markdownRoots: [], autoDetect: false, includeDshTodos: true, dshCacheDir: dshDir, cacheTtlMs: 0 },
         { now: NOW },
       );
 
@@ -726,6 +747,7 @@ test('DSH todos：pending/in_progress 映射、坏 JSON/非数组缺字段全容
       const withDone = await aggregate(
         {
           markdownRoots: [],
+          autoDetect: false,
           includeDshTodos: true,
           includeDshCompleted: true,
           dshCacheDir: dshDir,
@@ -743,6 +765,7 @@ test('DSH todos：pending/in_progress 映射、坏 JSON/非数组缺字段全容
       const none = await aggregate(
         {
           markdownRoots: [],
+          autoDetect: false,
           includeDshTodos: true,
           dshCacheDir: dshDir,
           dshMaxSessions: 0,
@@ -761,7 +784,7 @@ test('DSH 目录不存在：source.error 说明，不抛错；includeDshTodos=fa
   await withVault({}, async (dir) => {
     const missing = path.join(dir, 'no-dsh');
     const snapshot = await aggregate(
-      { markdownRoots: [], includeDshTodos: true, dshCacheDir: missing, cacheTtlMs: 0 },
+      { markdownRoots: [], autoDetect: false, includeDshTodos: true, dshCacheDir: missing, cacheTtlMs: 0 },
       { now: NOW },
     );
     assert.equal(snapshot.ok, true);
@@ -773,7 +796,7 @@ test('DSH 目录不存在：source.error 说明，不抛错；includeDshTodos=fa
     assert.equal(snapshot.todos.length, 0);
 
     const disabled = await aggregate(
-      { markdownRoots: [], includeDshTodos: false, cacheTtlMs: 0 },
+      { markdownRoots: [], autoDetect: false, includeDshTodos: false, cacheTtlMs: 0 },
       { now: NOW },
     );
     assert.deepEqual(disabled.sources, []);
@@ -809,6 +832,7 @@ test('stats：本地时区 overdue / dueToday / dueSoon（不含今天、含第 
       dueToday: 1,
       dueSoon: 2,
       undated: 1,
+      discovered: { checkbox: 9, tag: 0, frontmatter: 0, marker: 0 },
     });
   });
 });
@@ -998,6 +1022,7 @@ test('cancelled 计数口径：source 的 open/done 排除 cancelled；stats 新
       dueToday: 0,
       dueSoon: 0,
       undated: 1,
+      discovered: { checkbox: 7, tag: 0, frontmatter: 0, marker: 0 },
     });
   });
 });

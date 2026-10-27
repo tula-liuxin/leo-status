@@ -4,11 +4,14 @@
  * 导出：
  *   DEFAULTS                         完整默认配置
  *   EMPTY_STATS                      空统计对象（index.js 错误兜底用）
+ *   DEFAULT_SEARCH_ROOTS             Obsidian 自动发现的默认搜索根
  *   normalizeConfig(raw)             校验并补全配置，非法抛 Error('leo-status config: ...')
+ *   detectVaults(opts)               自动发现 Obsidian vault（BFS 找 .obsidian）
  *   aggregate(config, opts)          => Snapshot；opts = { now?: Date, force?: boolean }
  *
- * 只读扫描：Markdown 文件树 + DSH session todos。
- * 遵守 leo-status/CONTRACT.md §2/§3/§4。
+ * 只读扫描：Markdown 文件树（checkbox / tag / marker / frontmatter 规则）+ DSH session todos。
+ * v0.4.0：自动发现 vault、规则扩展、增量扫描缓存（cacheFile）。
+ * 遵守 leo-status/CONTRACT.md 与 CONTRACT-V4.md §2。
  */
 
 import { promises as fsp } from 'node:fs';
@@ -18,6 +21,30 @@ import os from 'node:os';
 /* ------------------------------------------------------------------ */
 /* 常量                                                                */
 /* ------------------------------------------------------------------ */
+
+/** v0.4 conventions 默认值（CONTRACT-V4 §1）。 */
+const CONVENTION_DEFAULTS = Object.freeze({
+  checkbox: true,
+  tagLines: true,
+  tags: Object.freeze(['todo', 'task', '待办', 'TODO']),
+  frontmatter: true,
+  frontmatterList: true,
+  markers: false,
+  markerWords: Object.freeze(['TODO', '待办', 'FIXME']),
+  headingStatus: true,
+});
+
+/** 自动发现的默认搜索根（只取实际存在的目录由 detectVaults 负责过滤）。 */
+export const DEFAULT_SEARCH_ROOTS = Object.freeze(
+  process.platform === 'win32'
+    ? [
+        path.join(os.homedir(), 'Desktop'),
+        path.join(os.homedir(), 'Documents'),
+        'D:\\',
+        'C:\\data',
+      ]
+    : [path.join(os.homedir(), 'Desktop'), path.join(os.homedir(), 'Documents'), os.homedir()],
+);
 
 export const DEFAULTS = {
   // 中性默认：具体笔记目录写在本机 <dataDir>/settings.json（不进仓库、不含个人路径）
@@ -42,6 +69,21 @@ export const DEFAULTS = {
   maxFiles: 20000,
   dshMaxSessions: 300,
   cacheTtlMs: 15000, // aggregate 内存缓存；force=true 绕过
+  // v0.4：Obsidian 规则与自动发现
+  conventions: {
+    checkbox: CONVENTION_DEFAULTS.checkbox,
+    tagLines: CONVENTION_DEFAULTS.tagLines,
+    tags: CONVENTION_DEFAULTS.tags.slice(),
+    frontmatter: CONVENTION_DEFAULTS.frontmatter,
+    frontmatterList: CONVENTION_DEFAULTS.frontmatterList,
+    markers: CONVENTION_DEFAULTS.markers,
+    markerWords: CONVENTION_DEFAULTS.markerWords.slice(),
+    headingStatus: CONVENTION_DEFAULTS.headingStatus,
+  },
+  autoDetect: true,
+  searchRoots: [],
+  vaultMaxDepth: 4,
+  cacheFile: '',
 };
 
 export const EMPTY_STATS = Object.freeze({
@@ -53,6 +95,7 @@ export const EMPTY_STATS = Object.freeze({
   dueToday: 0,
   dueSoon: 0,
   undated: 0,
+  discovered: Object.freeze({ checkbox: 0, tag: 0, frontmatter: 0, marker: 0 }),
 });
 
 export const SNAPSHOT_VERSION = 1;
@@ -178,6 +221,52 @@ function normalizeNumber(value, fallback, name, { min = -Infinity, integer = fal
   return value;
 }
 
+function cloneConventions() {
+  return {
+    ...CONVENTION_DEFAULTS,
+    tags: CONVENTION_DEFAULTS.tags.slice(),
+    markerWords: CONVENTION_DEFAULTS.markerWords.slice(),
+  };
+}
+
+function normalizeNonEmptyStringList(value, fallback, name) {
+  if (value === undefined) return fallback.slice();
+  if (!Array.isArray(value)) throw configError(`${name} 必须是字符串数组`);
+  const result = value.map((item, index) => {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw configError(`${name}[${index}] 必须是非空字符串`);
+    }
+    return item.trim();
+  });
+  if (result.length === 0) throw configError(`${name} 不能为空数组`);
+  return result;
+}
+
+/** v0.4 conventions：逐字段兜底 + 校验（未知字段原样保留）。 */
+function normalizeConventions(value) {
+  if (value === undefined) return cloneConventions();
+  if (!isPlainObject(value)) throw configError('conventions 必须是对象');
+  const defaults = CONVENTION_DEFAULTS;
+  const result = { ...value };
+  result.checkbox = normalizeBoolean(value.checkbox, defaults.checkbox, 'conventions.checkbox');
+  result.tagLines = normalizeBoolean(value.tagLines, defaults.tagLines, 'conventions.tagLines');
+  result.tags = normalizeNonEmptyStringList(value.tags, defaults.tags, 'conventions.tags');
+  result.frontmatter = normalizeBoolean(value.frontmatter, defaults.frontmatter, 'conventions.frontmatter');
+  result.frontmatterList = normalizeBoolean(
+    value.frontmatterList,
+    defaults.frontmatterList,
+    'conventions.frontmatterList',
+  );
+  result.markers = normalizeBoolean(value.markers, defaults.markers, 'conventions.markers');
+  result.markerWords = normalizeNonEmptyStringList(
+    value.markerWords,
+    defaults.markerWords,
+    'conventions.markerWords',
+  );
+  result.headingStatus = normalizeBoolean(value.headingStatus, defaults.headingStatus, 'conventions.headingStatus');
+  return result;
+}
+
 /**
  * 校验并补全配置。undefined / null 返回完整默认配置的深拷贝。
  * 非法值抛 Error('leo-status config: ...')。
@@ -204,6 +293,14 @@ export function normalizeConfig(raw) {
       integer: true,
     }),
     cacheTtlMs: normalizeNumber(input.cacheTtlMs, DEFAULTS.cacheTtlMs, 'cacheTtlMs', { min: 0 }),
+    conventions: normalizeConventions(input.conventions),
+    autoDetect: normalizeBoolean(input.autoDetect, DEFAULTS.autoDetect, 'autoDetect'),
+    searchRoots: normalizeStringArray(input.searchRoots, DEFAULTS.searchRoots, 'searchRoots'),
+    vaultMaxDepth: normalizeNumber(input.vaultMaxDepth, DEFAULTS.vaultMaxDepth, 'vaultMaxDepth', {
+      min: 0,
+      integer: true,
+    }),
+    cacheFile: normalizeString(input.cacheFile, DEFAULTS.cacheFile, 'cacheFile'),
   };
 }
 
@@ -387,6 +484,174 @@ function parseTodoMetadata(rest) {
 }
 
 /* ------------------------------------------------------------------ */
+/* v0.4 规则解析辅助（tag / marker / frontmatter / headingStatus）      */
+/* ------------------------------------------------------------------ */
+
+const TAG_TOKEN_RE = /#([\p{L}\p{N}_\-/]+)/gu;
+const DRAWING_HEADING_RE = /^(drawing|text elements)$/i;
+const HEADING_STATUS_RULES = [
+  ['done', /已完成|done/i],
+  ['in_progress', /进行中|doing|in progress/i],
+  ['blocked', /阻塞|blocked|卡住/i],
+  ['pending', /待做|待办|todo|future|计划/i],
+];
+const FM_TODO_TAGS = new Set(['todo', 'task', '待办']);
+
+/** 归一化文本：用于 frontmatter-list 与 checkbox 去重。 */
+function normalizeTodoText(text) {
+  return String(text).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function leadingIndent(line) {
+  const whitespace = /^[ \t]*/.exec(line)?.[0] ?? '';
+  return Math.floor(whitespace.replace(/\t/g, '  ').length / 2);
+}
+
+/** 去掉行首引用符（> 可多层）与 bullet / 有序列表标记。 */
+function stripStructuralPrefix(line) {
+  return line
+    .replace(/^\s*(?:>\s*)+/, '')
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
+    .trim();
+}
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function conventionTagSet(conventions) {
+  const set = new Set();
+  for (const tag of conventions.tags) {
+    const clean = String(tag).trim().toLowerCase().replace(/^#/, '');
+    if (clean !== '') set.add(clean);
+  }
+  return set;
+}
+
+/** 行内匹配 conventions.tags（大小写不敏感，允许 #todo/must 形式）。 */
+function matchConventionTags(line, tagSet) {
+  const tokens = [];
+  const seen = new Set();
+  for (const match of line.matchAll(TAG_TOKEN_RE)) {
+    const full = match[1];
+    if (!full) continue;
+    const lower = full.toLowerCase();
+    const root = lower.split('/')[0];
+    if (!tagSet.has(root) && !tagSet.has(lower)) continue;
+    if (seen.has(lower)) continue;
+    seen.add(lower);
+    tokens.push({ full, lower });
+  }
+  return tokens;
+}
+
+/** tag 行文本 = 去掉行首结构标记与命中的标签。 */
+function tagLineText(line, tokens) {
+  let text = stripStructuralPrefix(line);
+  const sorted = tokens.slice().sort((a, b) => b.full.length - a.full.length);
+  for (const token of sorted) {
+    text = text.split(`#${token.full}`).join(' ');
+  }
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** marker 行文本 = 冒号后内容；为空则整行（去结构前缀）。 */
+function markerLineText(line, markerWords) {
+  const words = markerWords.map((word) => String(word).trim()).filter((word) => word !== '');
+  if (words.length === 0) return null;
+  const pattern = words.map(escapeRegExp).join('|');
+  const regex = new RegExp(`(?:${pattern})\\s*[:：]`, 'i');
+  const match = regex.exec(line);
+  if (!match) return null;
+  const after = line.slice(match.index + match[0].length).trim();
+  const text = after !== '' ? after : stripStructuralPrefix(line);
+  return text === '' ? null : text;
+}
+
+function stripQuotes(value) {
+  const text = String(value).trim();
+  if (text.length >= 2) {
+    const first = text[0];
+    const last = text[text.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) return text.slice(1, -1).trim();
+  }
+  return text;
+}
+
+function parseInlineYamlList(value) {
+  const inner = String(value).replace(/^\[/, '').replace(/\]\s*$/, '');
+  return inner
+    .split(',')
+    .map((part) => stripQuotes(part))
+    .filter((part) => part !== '');
+}
+
+/**
+ * 解析文件 frontmatter：识别 todo: true / status: todo / tags 含 todo 类，
+ * 以及 todos: 列表（块列表或行内数组）。
+ */
+function parseFrontmatterBlock(lines) {
+  const info = { isTodo: false, todos: [] };
+  const matchesTodoTag = (tag) => {
+    const lower = String(tag).toLowerCase();
+    return FM_TODO_TAGS.has(lower) || FM_TODO_TAGS.has(lower.split('/')[0]);
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const match = /^\s{0,3}([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const key = match[1].toLowerCase();
+    const rawValue = match[2].trim();
+
+    if (key === 'todo') {
+      if (/^(true|yes)$/i.test(stripQuotes(rawValue))) info.isTodo = true;
+      continue;
+    }
+    if (key === 'status') {
+      if (stripQuotes(rawValue).toLowerCase() === 'todo') info.isTodo = true;
+      continue;
+    }
+    if (key !== 'tags' && key !== 'todos') continue;
+
+    let items = [];
+    if (rawValue.startsWith('[')) {
+      items = parseInlineYamlList(rawValue);
+    } else if (rawValue === '') {
+      let next = index + 1;
+      while (next < lines.length) {
+        const item = /^\s*-\s+(.*)$/.exec(lines[next]);
+        if (!item) break;
+        const value = stripQuotes(item[1]);
+        if (value !== '') items.push(value);
+        next += 1;
+      }
+      index = next - 1;
+    } else {
+      const single = stripQuotes(rawValue);
+      if (single !== '') items.push(single);
+    }
+
+    if (key === 'tags') {
+      if (items.some(matchesTodoTag)) info.isTodo = true;
+    } else {
+      info.todos.push(...items);
+    }
+  }
+
+  return info;
+}
+
+/** 最近标题 → headingStatus（只做展示提示，不改 done/cancelled）。 */
+function headingStatusFor(headingText) {
+  if (!headingText) return null;
+  for (const [status, regex] of HEADING_STATUS_RULES) {
+    if (regex.test(headingText)) return status;
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
 /* Markdown 文件内容解析                                               */
 /* ------------------------------------------------------------------ */
 
@@ -398,23 +663,36 @@ function parseMarkdownContent(content, ctx) {
   const out = [];
   if (typeof content !== 'string' || content === '') return out;
 
+  const conventions =
+    ctx.conventions !== null && ctx.conventions !== undefined && typeof ctx.conventions === 'object'
+      ? ctx.conventions
+      : DEFAULTS.conventions;
+
   const lines = content.split(/\r?\n/);
   let cursor = 0;
 
   // 文件首 YAML frontmatter：--- ... ---
   const firstLine = lines.length > 0 ? lines[0].replace(/^\uFEFF/, '') : '';
-  if (firstLine.trim() === '---') {
+  let frontmatter = { isTodo: false, todos: [] };
+  const needFrontmatter = conventions.frontmatter !== false || conventions.frontmatterList !== false;
+  if (firstLine.trim() === '---' && needFrontmatter) {
     for (let index = 1; index < lines.length; index += 1) {
       if (lines[index].trim() === '---') {
         cursor = index + 1;
+        frontmatter = parseFrontmatterBlock(lines.slice(1, index));
         break;
       }
     }
   }
 
+  const fileFlag = conventions.frontmatter !== false && frontmatter.isTodo ? 'todo' : null;
   const noteDate = inferNoteDate(ctx.relPath, ctx.now);
   const headingStack = []; // { level, text }
   let fence = null; // { char, len }
+  let drawingLevel = null; // ## Drawing / ## Text Elements 段
+  const tagSet = conventions.tagLines ? conventionTagSet(conventions) : new Set();
+  const markerWords = conventions.markers ? conventions.markerWords : [];
+  const checkboxTexts = new Set(); // frontmatter-list 去重用
 
   for (let index = cursor; index < lines.length; index += 1) {
     const line = lines[index];
@@ -438,7 +716,7 @@ function parseMarkdownContent(content, ctx) {
       }
     }
 
-    // 标题栈
+    // 标题栈 + 绘图段跳过（## Drawing / ## Text Elements 直到下一个同级/更高级标题）
     const headingMatch = HEADING_RE.exec(line);
     if (headingMatch) {
       const level = headingMatch[1].length;
@@ -447,58 +725,198 @@ function parseMarkdownContent(content, ctx) {
         headingStack.pop();
       }
       headingStack.push({ level, text });
+      if (drawingLevel !== null && level <= drawingLevel) drawingLevel = null;
+      if (DRAWING_HEADING_RE.test(text)) drawingLevel = level;
       continue;
     }
-
-    // 复选框
-    const checkbox = CHECKBOX_RE.exec(line);
-    if (!checkbox) continue;
-
-    const indentRaw = checkbox.groups.indent || '';
-    // 制表符算一层；空格每 2 个算一层
-    const indent = Math.floor(indentRaw.replace(/\t/g, '  ').length / 2);
-    const mark = checkbox.groups.mark;
-    const rest = checkbox.groups.rest ?? '';
-    const meta = parseTodoMetadata(rest);
-
-    // 契约 §3：去掉元数据后 text 为空 => 空任务直接丢弃（不回退空文本）
-    if (meta.text === '') continue;
-
-    // 契约 §3：[x]/[X] 只算 done；[-]/[/] 与整体 ~~…~~ 包裹都算 cancelled（优先于 done）
-    const cancelled = meta.cancelled || mark === '-' || mark === '/';
-    const done = (mark === 'x' || mark === 'X') && !cancelled;
+    if (drawingLevel !== null) continue;
 
     const headingText = headingStack
       .map((item) => item.text)
       .filter((text) => text !== '')
       .join(' > ');
+    const heading = headingText === '' ? null : headingText;
+    const nearestHeading = headingStack.length > 0 ? headingStack[headingStack.length - 1].text : '';
+    const headingStatus = conventions.headingStatus ? headingStatusFor(nearestHeading) : null;
 
-    out.push({
-      id: `md:${ctx.sourceId}:${ctx.relPath}:${index + 1}`,
-      kind: 'markdown',
-      text: meta.text,
-      raw: line.slice(0, 500),
-      done,
-      cancelled,
-      sourceId: ctx.sourceId,
-      sourceLabel: ctx.sourceLabel,
-      file: ctx.absPath,
-      relPath: ctx.relPath,
-      line: index + 1,
-      heading: headingText === '' ? null : headingText,
-      indent,
-      noteDate,
-      due: meta.due,
-      scheduled: meta.scheduled,
-      start: meta.start,
-      priority: meta.priority,
-      tags: meta.tags,
-      links: meta.links,
-      recurrence: meta.recurrence,
-      sessionId: null,
-      sessionTitle: null,
-      project: null,
-    });
+    // 复选框行（同一行有 checkbox 时 tag/marker 一律跳过；conventions.checkbox=false 则整行不识别）
+    const checkbox = CHECKBOX_RE.exec(line);
+    if (checkbox) {
+      if (conventions.checkbox === false) continue;
+
+      const indentRaw = checkbox.groups.indent || '';
+      // 制表符算一层；空格每 2 个算一层
+      const indent = Math.floor(indentRaw.replace(/\t/g, '  ').length / 2);
+      const mark = checkbox.groups.mark;
+      const rest = checkbox.groups.rest ?? '';
+      const meta = parseTodoMetadata(rest);
+
+      // 契约 §3：去掉元数据后 text 为空 => 空任务直接丢弃（不回退空文本）
+      if (meta.text !== '') {
+        // [x]/[X] 只算 done；[-]/[/] 与整体 ~~…~~ 包裹都算 cancelled（优先于 done）
+        const cancelled = meta.cancelled || mark === '-' || mark === '/';
+        const done = (mark === 'x' || mark === 'X') && !cancelled;
+
+        checkboxTexts.add(normalizeTodoText(meta.text));
+        out.push({
+          id: `md:${ctx.sourceId}:${ctx.relPath}:${index + 1}`,
+          kind: 'markdown',
+          text: meta.text,
+          raw: line.slice(0, 500),
+          done,
+          cancelled,
+          sourceId: ctx.sourceId,
+          sourceLabel: ctx.sourceLabel,
+          file: ctx.absPath,
+          relPath: ctx.relPath,
+          line: index + 1,
+          heading,
+          indent,
+          noteDate,
+          due: meta.due,
+          scheduled: meta.scheduled,
+          start: meta.start,
+          priority: meta.priority,
+          tags: meta.tags,
+          links: meta.links,
+          recurrence: meta.recurrence,
+          sessionId: null,
+          sessionTitle: null,
+          project: null,
+          discoveredBy: 'checkbox',
+          writable: true,
+          confidence: 1,
+          headingStatus,
+          fileFlag,
+        });
+      }
+      continue;
+    }
+
+    // tag 行（不是标题/checkbox/围栏，正文非空）
+    if (conventions.tagLines) {
+      const tokens = matchConventionTags(line, tagSet);
+      if (tokens.length > 0) {
+        const text = tagLineText(line, tokens);
+        if (text !== '') {
+          out.push({
+            id: `md:${ctx.sourceId}:${ctx.relPath}:${index + 1}`,
+            kind: 'markdown',
+            text,
+            raw: line.slice(0, 500),
+            done: false,
+            cancelled: false,
+            sourceId: ctx.sourceId,
+            sourceLabel: ctx.sourceLabel,
+            file: ctx.absPath,
+            relPath: ctx.relPath,
+            line: index + 1,
+            heading,
+            indent: leadingIndent(line),
+            noteDate,
+            due: null,
+            scheduled: null,
+            start: null,
+            priority: null,
+            tags: tokens.map((token) => token.full),
+            links: [],
+            recurrence: null,
+            sessionId: null,
+            sessionTitle: null,
+            project: null,
+            discoveredBy: 'tag',
+            writable: false,
+            confidence: 0.8,
+            headingStatus,
+            fileFlag,
+          });
+          continue;
+        }
+      }
+    }
+
+    // marker 行（TODO: / 待办：/ FIXME: 等）
+    if (conventions.markers && markerWords.length > 0) {
+      const text = markerLineText(line, markerWords);
+      if (text !== null && text !== '') {
+        out.push({
+          id: `md:${ctx.sourceId}:${ctx.relPath}:${index + 1}`,
+          kind: 'markdown',
+          text,
+          raw: line.slice(0, 500),
+          done: false,
+          cancelled: false,
+          sourceId: ctx.sourceId,
+          sourceLabel: ctx.sourceLabel,
+          file: ctx.absPath,
+          relPath: ctx.relPath,
+          line: index + 1,
+          heading,
+          indent: leadingIndent(line),
+          noteDate,
+          due: null,
+          scheduled: null,
+          start: null,
+          priority: null,
+          tags: [],
+          links: [],
+          recurrence: null,
+          sessionId: null,
+          sessionTitle: null,
+          project: null,
+          discoveredBy: 'marker',
+          writable: false,
+          confidence: 0.75,
+          headingStatus,
+          fileFlag,
+        });
+      }
+    }
+  }
+
+  // frontmatter-list：合成 todo（line=0、raw=''、不可写）；与 checkbox 文本重复时跳过
+  if (conventions.frontmatterList && frontmatter.todos.length > 0) {
+    const seen = new Set();
+    let fmIndex = 0;
+    for (const rawItem of frontmatter.todos) {
+      const text = String(rawItem).trim();
+      if (text === '') continue;
+      const normalized = normalizeTodoText(text);
+      if (checkboxTexts.has(normalized) || seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push({
+        id: `md:${ctx.sourceId}:${ctx.relPath}:fm:${fmIndex}`,
+        kind: 'markdown',
+        text,
+        raw: '',
+        done: false,
+        cancelled: false,
+        sourceId: ctx.sourceId,
+        sourceLabel: ctx.sourceLabel,
+        file: ctx.absPath,
+        relPath: ctx.relPath,
+        line: 0,
+        heading: null,
+        indent: 0,
+        noteDate,
+        due: null,
+        scheduled: null,
+        start: null,
+        priority: null,
+        tags: [],
+        links: [],
+        recurrence: null,
+        sessionId: null,
+        sessionTitle: null,
+        project: null,
+        discoveredBy: 'frontmatter-list',
+        writable: false,
+        confidence: 0.7,
+        headingStatus: null,
+        fileFlag,
+      });
+      fmIndex += 1;
+    }
   }
 
   return out;
@@ -550,14 +968,15 @@ function finalizeSource(source, todos) {
 /**
  * 递归扫一个 markdown root。
  * budget 是跨 root 共享的 { files, limitHit }，用于 maxFiles 总上限。
+ * cacheHandle（可为 null）携带增量缓存状态：{ oldFiles, newFiles, hits, misses }。
  */
-async function scanMarkdownRoot(root, config, now, budget) {
+async function scanMarkdownRoot(root, config, now, budget, cacheHandle) {
   const source = newSource(root.id, 'markdown', root.label, root.path);
   const todos = [];
 
   if (budget.limitHit) {
     source.error = FILE_LIMIT_ERROR;
-    return { source, todos };
+    return { source, todos, cacheFiles: null };
   }
 
   const rootAbs = path.resolve(root.path);
@@ -565,11 +984,11 @@ async function scanMarkdownRoot(root, config, now, budget) {
     const stat = await fsp.stat(rootAbs);
     if (!stat.isDirectory()) {
       source.error = `目录不是文件夹: ${root.path}`;
-      return { source, todos };
+      return { source, todos, cacheFiles: null };
     }
   } catch (error) {
     source.error = describeFsError('目录', root.path, error);
-    return { source, todos };
+    return { source, todos, cacheFiles: null };
   }
 
   const excludeDirs = new Set(config.excludeDirs.map((name) => name.toLowerCase()));
@@ -584,15 +1003,27 @@ async function scanMarkdownRoot(root, config, now, budget) {
     }
     if (stat.size > config.maxFileBytes) return;
 
+    budget.files += 1;
+    source.files += 1;
+
+    // 增量缓存：mtimeMs + size 未变 → 复用上次 todos（不读文件内容）
+    if (cacheHandle) {
+      const cached = isPlainObject(cacheHandle.oldFiles[relPath]) ? cacheHandle.oldFiles[relPath] : null;
+      if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && Array.isArray(cached.todos)) {
+        cacheHandle.hits += 1;
+        cacheHandle.newFiles[relPath] = cached;
+        for (const todo of cached.todos) todos.push(todo);
+        return;
+      }
+      cacheHandle.misses += 1;
+    }
+
     let content;
     try {
       content = await fsp.readFile(absPath, 'utf8');
     } catch {
       return; // 单个文件读失败不影响整体
     }
-
-    budget.files += 1;
-    source.files += 1;
 
     let parsed;
     try {
@@ -602,6 +1033,7 @@ async function scanMarkdownRoot(root, config, now, budget) {
         sourceId: root.id,
         sourceLabel: root.label,
         now,
+        conventions: config.conventions,
       });
     } catch (error) {
       // 单个文件解析异常不应让整体失败
@@ -609,6 +1041,10 @@ async function scanMarkdownRoot(root, config, now, budget) {
         source.error = `解析失败: ${relPath} (${error && error.message ? error.message : String(error)})`;
       }
       return;
+    }
+
+    if (cacheHandle) {
+      cacheHandle.newFiles[relPath] = { mtimeMs: stat.mtimeMs, size: stat.size, todos: parsed };
     }
     for (const todo of parsed) todos.push(todo);
   };
@@ -647,7 +1083,7 @@ async function scanMarkdownRoot(root, config, now, budget) {
 
   await walk(rootAbs, '');
   finalizeSource(source, todos);
-  return { source, todos };
+  return { source, todos, cacheFiles: cacheHandle ? cacheHandle.newFiles : null };
 }
 
 /* ------------------------------------------------------------------ */
@@ -778,6 +1214,11 @@ async function scanDshSource(config) {
         sessionId,
         sessionTitle,
         project,
+        discoveredBy: 'dsh',
+        writable: false,
+        confidence: 1,
+        headingStatus: null,
+        fileFlag: null,
       });
     });
   }
@@ -800,10 +1241,14 @@ function buildStats(todos, now) {
     dueToday: 0,
     dueSoon: 0,
     undated: 0,
+    discovered: { checkbox: 0, tag: 0, frontmatter: 0, marker: 0 },
   };
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   for (const todo of todos) {
+    if (todo.discoveredBy !== undefined && todo.discoveredBy in stats.discovered) {
+      stats.discovered[todo.discoveredBy] += 1;
+    }
     if (todo.done) {
       stats.done += 1;
       continue;
@@ -830,6 +1275,177 @@ function buildStats(todos, now) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Obsidian vault 自动发现（v0.4）                                      */
+/* ------------------------------------------------------------------ */
+
+const VAULT_SKIP_DIRS = new Set(['.obsidian', '.git', 'node_modules']);
+const VAULT_NOTE_LIMIT = 5000;
+
+/** 稳定 8 位十六进制 hash（FNV-1a），用于 auto root id。 */
+function hash8(value) {
+  const text = String(value);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+async function resolveRealPath(target) {
+  try {
+    return await fsp.realpath(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/** 数一个 vault 下的 .md 数量与最新 mtime（防御性上限 5000）。 */
+async function describeVaultFiles(vaultPath, signal) {
+  let noteCount = 0;
+  let lastMtimeMs = 0;
+  const stack = [vaultPath];
+  while (stack.length > 0 && noteCount < VAULT_NOTE_LIMIT) {
+    if (signal && signal.aborted) break;
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue; // 跳过无权限目录
+    }
+    for (const entry of entries) {
+      if (noteCount >= VAULT_NOTE_LIMIT) break;
+      const absPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!VAULT_SKIP_DIRS.has(entry.name)) stack.push(absPath);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+        noteCount += 1;
+        try {
+          const stat = await fsp.stat(absPath);
+          if (stat.mtimeMs > lastMtimeMs) lastMtimeMs = stat.mtimeMs;
+        } catch {
+          /* 无权限/竞态：跳过该文件 */
+        }
+      }
+    }
+  }
+  return { noteCount, lastMtimeMs };
+}
+
+/**
+ * BFS 自动发现 Obsidian vault（目录含 `.obsidian` 子目录）。
+ * 不进入 .obsidian/.git/node_modules；跳过无权限目录；按 .md 数量降序；路径去重。
+ *
+ * @param {{ searchRoots?: string[], maxDepth?: number, limit?: number, signal?: AbortSignal }} [opts]
+ * @returns {Promise<Array<{path: string, name: string, noteCount: number, lastMtimeMs: number}>>}
+ */
+export async function detectVaults({ searchRoots, maxDepth = 4, limit = 20, signal } = {}) {
+  const roots =
+    Array.isArray(searchRoots) && searchRoots.length > 0
+      ? searchRoots.filter((item) => typeof item === 'string' && item.trim() !== '')
+      : DEFAULT_SEARCH_ROOTS;
+  const depthLimit = Number.isInteger(maxDepth) && maxDepth >= 0 ? maxDepth : 4;
+  const resultLimit = Number.isInteger(limit) && limit > 0 ? limit : 20;
+
+  const queue = [];
+  for (const root of roots) {
+    const rootPath = path.resolve(root);
+    try {
+      const stat = await fsp.stat(rootPath);
+      if (stat.isDirectory()) queue.push({ dir: rootPath, depth: 0 });
+    } catch {
+      /* 不存在/无权限：跳过 */
+    }
+  }
+
+  const seen = new Set();
+  const vaults = [];
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    if (signal && signal.aborted) break;
+    const { dir, depth } = queue[cursor];
+    const realPath = await resolveRealPath(dir);
+    if (seen.has(realPath)) continue;
+    seen.add(realPath);
+
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const dirs = entries.filter((entry) => entry.isDirectory());
+    const isVault = dirs.some((entry) => entry.name === '.obsidian');
+
+    if (isVault) {
+      const info = await describeVaultFiles(dir, signal);
+      vaults.push({
+        path: dir,
+        name: path.basename(dir) || dir,
+        noteCount: info.noteCount,
+        lastMtimeMs: info.lastMtimeMs,
+      });
+      continue; // 不再深入 vault
+    }
+
+    if (depth >= depthLimit) continue;
+    for (const entry of dirs) {
+      if (VAULT_SKIP_DIRS.has(entry.name)) continue;
+      queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+    }
+  }
+
+  vaults.sort((a, b) => {
+    if (b.noteCount !== a.noteCount) return b.noteCount - a.noteCount;
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  });
+  return vaults.slice(0, resultLimit);
+}
+
+/* ------------------------------------------------------------------ */
+/* 增量扫描缓存（v0.4，cacheFile）                                      */
+/* ------------------------------------------------------------------ */
+
+const SCAN_CACHE_VERSION = 1;
+
+function emptyScanCache() {
+  return { version: SCAN_CACHE_VERSION, roots: {} };
+}
+
+async function loadScanCache(cacheFile) {
+  try {
+    const raw = await fsp.readFile(cacheFile, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      parsed.version === SCAN_CACHE_VERSION &&
+      isPlainObject(parsed.roots)
+    ) {
+      return { version: SCAN_CACHE_VERSION, roots: parsed.roots };
+    }
+  } catch {
+    /* 读失败/坏 JSON：当作空缓存，不抛 */
+  }
+  return emptyScanCache();
+}
+
+async function writeScanCache(cacheFile, cacheData) {
+  const tmpPath = `${cacheFile}.tmp`;
+  try {
+    await fsp.mkdir(path.dirname(cacheFile), { recursive: true });
+    await fsp.writeFile(tmpPath, JSON.stringify({ version: SCAN_CACHE_VERSION, roots: cacheData.roots }), 'utf8');
+    await fsp.rename(tmpPath, cacheFile);
+  } catch {
+    try {
+      await fsp.rm(tmpPath, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* aggregate + 内存缓存 / inflight 去重                                */
 /* ------------------------------------------------------------------ */
 
@@ -841,22 +1457,84 @@ const nowMs =
 let cache = null; // { key, at, snapshot }
 let inflight = null; // { key, promise }
 
+/**
+ * 生效的 markdown roots：配置 roots 优先；为空且 autoDetect 时自动发现 vault。
+ * @returns {Promise<{roots: Array<{id:string,label:string,path:string}>, discoveredVaults: Array<object>}>}
+ */
+async function resolveMarkdownRoots(config) {
+  if (config.markdownRoots.length > 0) {
+    return { roots: config.markdownRoots, discoveredVaults: [] };
+  }
+  if (!config.autoDetect) {
+    return { roots: [], discoveredVaults: [] };
+  }
+  try {
+    const searchRoots = config.searchRoots.length > 0 ? config.searchRoots : DEFAULT_SEARCH_ROOTS;
+    const vaults = await detectVaults({ searchRoots, maxDepth: config.vaultMaxDepth });
+    return {
+      roots: vaults.map((vault) => ({
+        id: `vault-${hash8(vault.path)}`,
+        label: vault.name,
+        path: vault.path,
+      })),
+      discoveredVaults: vaults.map((vault) => ({
+        path: vault.path,
+        name: vault.name,
+        noteCount: vault.noteCount,
+      })),
+    };
+  } catch {
+    // 自动发现失败不应让整体扫描失败
+    return { roots: [], discoveredVaults: [] };
+  }
+}
+
 async function runAggregate(config, now, startedAt) {
   const todos = [];
   const sources = [];
+
+  const cacheEnabled = typeof config.cacheFile === 'string' && config.cacheFile.trim() !== '';
+  const scanCache = cacheEnabled ? await loadScanCache(config.cacheFile) : null;
+  const cacheStats = { enabled: cacheEnabled, files: 0, hits: 0, misses: 0 };
+
+  const { roots, discoveredVaults } = await resolveMarkdownRoots(config);
   const budget = { files: 0, limitHit: false };
 
-  for (const root of config.markdownRoots) {
-    const result = await scanMarkdownRoot(root, config, now, budget);
+  for (const root of roots) {
+    const cacheHandle = scanCache
+      ? {
+          oldFiles:
+            scanCache.roots[root.id] && isPlainObject(scanCache.roots[root.id].files)
+              ? scanCache.roots[root.id].files
+              : {},
+          newFiles: {},
+          hits: 0,
+          misses: 0,
+        }
+      : null;
+
+    const result = await scanMarkdownRoot(root, config, now, budget, cacheHandle);
     sources.push(result.source);
     for (const todo of result.todos) todos.push(todo);
+
+    if (scanCache && cacheHandle) {
+      cacheStats.hits += cacheHandle.hits;
+      cacheStats.misses += cacheHandle.misses;
+      // 文件数超限时扫描不完整，保留旧缓存而不是用部分结果覆盖
+      if (result.cacheFiles !== null && result.source.error !== FILE_LIMIT_ERROR) {
+        scanCache.roots[root.id] = { files: result.cacheFiles };
+      }
+    }
   }
+  cacheStats.files = cacheStats.hits + cacheStats.misses;
 
   if (config.includeDshTodos) {
     const result = await scanDshSource(config);
     sources.push(result.source);
     for (const todo of result.todos) todos.push(todo);
   }
+
+  if (scanCache) await writeScanCache(config.cacheFile, scanCache);
 
   const stats = buildStats(todos, now);
 
@@ -868,9 +1546,13 @@ async function runAggregate(config, now, startedAt) {
     sources,
     todos,
     stats,
+    meta: {
+      discoveredVaults,
+      cache: cacheStats,
+    },
     config: {
       includeDshTodos: config.includeDshTodos,
-      markdownRootCount: config.markdownRoots.length,
+      markdownRootCount: roots.length,
     },
   };
 }

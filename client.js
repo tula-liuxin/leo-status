@@ -63,6 +63,833 @@ window.__ModuleLoader__.load({
       return fetch(url, options);
     }
 
+    // -- yuan (阿源) endpoints and helpers ---------------------------------------
+
+    const YUAN_STATE_API = '/leo-status/api/yuan/state?chat=1&limit=30';
+    const YUAN_SIGNALS_API = '/leo-status/api/yuan/signals';
+    const YUAN_CHAT_API = '/leo-status/api/yuan/chat';
+    const YUAN_ACCEPT_API = '/leo-status/api/yuan/suggestion/accept';
+    const YUAN_DISMISS_API = '/leo-status/api/yuan/suggestion/dismiss';
+    const YUAN_REMEMBER_API = '/leo-status/api/yuan/remember';
+    const YUAN_MEMORY_DELETE_API = '/leo-status/api/yuan/memory/delete';
+    const YUAN_REMINDER_API = '/leo-status/api/yuan/reminder';
+    const YUAN_REMINDER_DONE_API = '/leo-status/api/yuan/reminder/done';
+    const YUAN_SEEN_API = '/leo-status/api/yuan/seen';
+
+    /** Translator for slot components registered with `locale: NS`. */
+    function translatorFor(props) {
+      return props !== null && typeof props === 'object' && typeof props.t === 'function' ? props.t : boundT;
+    }
+
+    function pendingSuggestions(list) {
+      if (!Array.isArray(list)) return EMPTY;
+      return list.filter(
+        (item) =>
+          item !== null &&
+          typeof item === 'object' &&
+          (item.status === undefined || item.status === 'pending'),
+      );
+    }
+
+    function yuanSignalCounts(state) {
+      const counts = { suggestion: 0, reminder: 0, deadline: 0 };
+      const signals = state !== null && typeof state === 'object' && Array.isArray(state.signals) ? state.signals : EMPTY;
+      for (const signal of signals) {
+        if (signal === null || typeof signal !== 'object') continue;
+        const kind = typeof signal.kind === 'string' ? signal.kind : '';
+        const count = typeof signal.count === 'number' && Number.isFinite(signal.count) ? signal.count : 1;
+        if (Object.prototype.hasOwnProperty.call(counts, kind)) counts[kind] += count;
+      }
+      return counts;
+    }
+
+    function yuanSeverity(state) {
+      const signals = state !== null && typeof state === 'object' && Array.isArray(state.signals) ? state.signals : EMPTY;
+      let severity = null;
+      for (const signal of signals) {
+        if (signal === null || typeof signal !== 'object') continue;
+        if (signal.severity === 'urgent') return 'urgent';
+        if (signal.severity === 'warn') severity = 'warn';
+        else if (signal.severity === 'info' && severity === null) severity = 'info';
+      }
+      if (severity !== null) return severity;
+      const badge = state !== null && typeof state === 'object' ? state.badge : null;
+      if (badge !== null && typeof badge === 'object') {
+        if (toCount(badge.urgent) > 0) return 'urgent';
+        if (toCount(badge.total) > 0 || badge.hasUnread === true) return 'info';
+      }
+      return null;
+    }
+
+    function normalizeYuanState(body) {
+      const source = body !== null && typeof body === 'object' ? body : {};
+      return {
+        name: typeof source.name === 'string' ? source.name : '',
+        suggestions: Array.isArray(source.suggestions) ? source.suggestions : [],
+        signals: Array.isArray(source.signals) ? source.signals : [],
+        badge: source.badge !== undefined ? source.badge : null,
+        unread: source.unread !== undefined ? source.unread : null,
+        chat: Array.isArray(source.chat) ? source.chat : [],
+        memory: Array.isArray(source.memory) ? source.memory : [],
+        reminders: Array.isArray(source.reminders) ? source.reminders : [],
+        model: source.model !== undefined ? source.model : null,
+      };
+    }
+
+    function yuanMessageRole(message) {
+      return message !== null && typeof message === 'object' && message.role === 'assistant' ? 'assistant' : 'user';
+    }
+
+    function yuanMessageText(message) {
+      if (message === null || typeof message !== 'object') return '';
+      if (typeof message.text === 'string') return message.text;
+      if (typeof message.reply === 'string') return message.reply;
+      return '';
+    }
+
+    function yuanProposalList(proposals) {
+      if (Array.isArray(proposals)) {
+        return proposals
+          .map((item) => (typeof item === 'string' ? { kind: 'todo', text: item } : item))
+          .filter((item) => item !== null && typeof item === 'object');
+      }
+      if (proposals !== null && typeof proposals === 'object') {
+        const list = [];
+        for (const text of Array.isArray(proposals.todos) ? proposals.todos : EMPTY) {
+          if (typeof text === 'string' && text !== '') list.push({ kind: 'todo', text });
+        }
+        for (const text of Array.isArray(proposals.memories) ? proposals.memories : EMPTY) {
+          if (typeof text === 'string' && text !== '') list.push({ kind: 'memory', text });
+        }
+        for (const item of Array.isArray(proposals.reminders) ? proposals.reminders : EMPTY) {
+          if (item !== null && typeof item === 'object' && typeof item.text === 'string') {
+            list.push({ kind: 'reminder', text: item.text });
+          }
+        }
+        return list;
+      }
+      return EMPTY;
+    }
+
+    function yuanProposalLabel(proposal, t) {
+      const kind = proposal !== null && typeof proposal === 'object' && typeof proposal.kind === 'string' ? proposal.kind : 'todo';
+      const text =
+        proposal !== null && typeof proposal === 'object' && typeof proposal.text === 'string'
+          ? proposal.text
+          : String(proposal);
+      const key = kind === 'memory' ? 'yuanProposalMemory' : kind === 'reminder' ? 'yuanProposalReminder' : 'yuanProposalTodo';
+      return t(key) + ': ' + text;
+    }
+
+    function yuanSourceLabel(item, t) {
+      if (item === null || typeof item !== 'object') return '';
+      if (typeof item.sessionTitle === 'string' && item.sessionTitle !== '') return item.sessionTitle;
+      if (item.source === 'session') return t('yuanSourceSession');
+      if (item.source === 'note') return t('yuanSourceNote');
+      if (typeof item.project === 'string' && item.project !== '') return item.project;
+      return '';
+    }
+
+    function yuanLocalId(prefix) {
+      return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+
+    /** Host memory endpoints return `{memories:[...]}` (remember also returns the item). */
+    function yuanMemoryList(body, fallback) {
+      if (body !== null && typeof body === 'object') {
+        if (Array.isArray(body.memories)) return body.memories;
+        if (Array.isArray(body.memory)) return body.memory;
+      }
+      return Array.isArray(fallback) ? fallback : EMPTY;
+    }
+
+    async function yuanRequest(url, options) {
+      const settings = options !== null && typeof options === 'object' ? options : {};
+      const init = { credentials: 'same-origin', headers: { accept: 'application/json' } };
+      if (typeof settings.method === 'string') init.method = settings.method;
+      if (settings.body !== undefined) {
+        init.headers['content-type'] = 'application/json';
+        init.body = JSON.stringify(settings.body);
+      }
+      const response = await apiFetch(url, init);
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      if (!response.ok || body === null || typeof body !== 'object' || body.ok !== true) {
+        const message =
+          body !== null && typeof body === 'object' && typeof body.error === 'string' && body.error !== ''
+            ? body.error
+            : response.ok
+              ? 'invalid response'
+              : 'HTTP ' + response.status;
+        throw new Error(message);
+      }
+      return body;
+    }
+
+    /**
+     * Module-level Yuan store. Components subscribe with useState + useEffect (no
+     * useSyncExternalStore, so the mini-React render harness keeps working).
+     */
+    const yuan = {
+      open: false,
+      loading: false,
+      error: null,
+      state: null,
+      sending: false,
+      lastLoadedAt: 0,
+      lastBoard: null,
+      boardSeq: 0,
+      lastSeenAt: 0,
+      listeners: new Set(),
+      subscribe(listener) {
+        this.listeners.add(listener);
+        return () => {
+          this.listeners.delete(listener);
+        };
+      },
+      emit() {
+        for (const listener of [...this.listeners]) {
+          try {
+            listener();
+          } catch (error) {
+            console.error('[leo-status] yuan listener failed', error);
+          }
+        }
+      },
+      set(patch) {
+        Object.assign(this, patch);
+        this.emit();
+      },
+      patchState(patch) {
+        if (this.state === null) return;
+        this.state = { ...this.state, ...patch };
+        this.emit();
+      },
+      async load(force) {
+        if (this.loading) return this.state;
+        if (force !== true && this.state !== null && Date.now() - this.lastLoadedAt < 5000) return this.state;
+        this.set({ loading: true, error: null });
+        try {
+          const body = await yuanRequest(YUAN_STATE_API);
+          this.set({ loading: false, error: null, state: normalizeYuanState(body), lastLoadedAt: Date.now() });
+        } catch (error) {
+          this.set({ loading: false, error: describeError(error) });
+        }
+        return this.state;
+      },
+      async pollSignals() {
+        try {
+          const body = await yuanRequest(YUAN_SIGNALS_API);
+          const previous = this.state;
+          const next =
+            previous === null
+              ? normalizeYuanState(body)
+              : {
+                  ...previous,
+                  signals: Array.isArray(body.signals) ? body.signals : previous.signals,
+                  badge: body.badge !== undefined ? body.badge : previous.badge,
+                  unread: body.unread !== undefined ? body.unread : previous.unread,
+                };
+          this.set({ state: next, error: null });
+        } catch (error) {
+          this.set({ error: describeError(error) });
+        }
+      },
+      async send(text) {
+        const message = typeof text === 'string' ? text.trim() : '';
+        if (message === '' || this.sending) return null;
+        const previous = this.state;
+        const optimistic = { id: yuanLocalId('local-'), role: 'user', text: message, at: new Date().toISOString() };
+        const chat = previous !== null && Array.isArray(previous.chat) ? [...previous.chat, optimistic] : [optimistic];
+        this.set({ sending: true, error: null });
+        this.patchState({ chat });
+        try {
+          const body = await yuanRequest(YUAN_CHAT_API, { method: 'POST', body: { message } });
+          const next =
+            previous === null
+              ? normalizeYuanState(body)
+              : {
+                  ...previous,
+                  chat: Array.isArray(body.chat) ? body.chat : chat,
+                  suggestions: Array.isArray(body.suggestions) ? body.suggestions : previous.suggestions,
+                  signals: Array.isArray(body.signals) ? body.signals : previous.signals,
+                  badge: body.badge !== undefined ? body.badge : previous.badge,
+                };
+          this.set({ sending: false, error: null, state: next });
+          return body;
+        } catch (error) {
+          this.set({ sending: false, error: describeError(error) });
+          this.patchState({ chat: previous !== null && Array.isArray(previous.chat) ? previous.chat : [] });
+          return null;
+        }
+      },
+      async acceptSuggestion(id) {
+        if (typeof id !== 'string' || id === '') return null;
+        const previous = this.state;
+        const before = previous !== null && Array.isArray(previous.suggestions) ? previous.suggestions : EMPTY;
+        const remaining = before.filter((item) => item !== null && item.id !== id);
+        this.patchState({ suggestions: remaining });
+        try {
+          const body = await yuanRequest(YUAN_ACCEPT_API, { method: 'POST', body: { id } });
+          const suggestions = Array.isArray(body.suggestions) ? body.suggestions : remaining;
+          if (this.state === null) this.set({ state: { ...normalizeYuanState(body), suggestions } });
+          else this.patchState({ suggestions });
+          if (body.board !== null && typeof body.board === 'object') {
+            this.set({ lastBoard: body.board, boardSeq: this.boardSeq + 1 });
+          }
+          return body;
+        } catch (error) {
+          this.set({ error: describeError(error) });
+          this.patchState({ suggestions: before });
+          return null;
+        }
+      },
+      async dismissSuggestion(id) {
+        if (typeof id !== 'string' || id === '') return null;
+        const previous = this.state;
+        const before = previous !== null && Array.isArray(previous.suggestions) ? previous.suggestions : EMPTY;
+        const remaining = before.filter((item) => item !== null && item.id !== id);
+        this.patchState({ suggestions: remaining });
+        try {
+          const body = await yuanRequest(YUAN_DISMISS_API, { method: 'POST', body: { id } });
+          const suggestions = Array.isArray(body.suggestions) ? body.suggestions : remaining;
+          if (this.state === null) this.set({ state: { ...normalizeYuanState(body), suggestions } });
+          else this.patchState({ suggestions });
+          return body;
+        } catch (error) {
+          this.set({ error: describeError(error) });
+          this.patchState({ suggestions: before });
+          return null;
+        }
+      },
+      async remember(text) {
+        const value = typeof text === 'string' ? text.trim() : '';
+        if (value === '') return null;
+        const previous = this.state !== null && Array.isArray(this.state.memory) ? this.state.memory : EMPTY;
+        try {
+          const body = await yuanRequest(YUAN_REMEMBER_API, { method: 'POST', body: { text: value } });
+          const memory = yuanMemoryList(body, previous);
+          if (this.state === null) this.set({ state: { ...normalizeYuanState(body), memory } });
+          else this.patchState({ memory });
+          return body;
+        } catch (error) {
+          this.set({ error: describeError(error) });
+          return null;
+        }
+      },
+      async deleteMemory(id) {
+        if (typeof id !== 'string' || id === '') return null;
+        const previous = this.state !== null && Array.isArray(this.state.memory) ? this.state.memory : EMPTY;
+        try {
+          const body = await yuanRequest(YUAN_MEMORY_DELETE_API, { method: 'POST', body: { id } });
+          const memory = yuanMemoryList(
+            body,
+            previous.filter((item) => item !== null && typeof item === 'object' && item.id !== id),
+          );
+          if (this.state === null) this.set({ state: { ...normalizeYuanState(body), memory } });
+          else this.patchState({ memory });
+          return body;
+        } catch (error) {
+          this.set({ error: describeError(error) });
+          return null;
+        }
+      },
+      async addReminder(text, at) {
+        const value = typeof text === 'string' ? text.trim() : '';
+        if (value === '') return null;
+        try {
+          const body = await yuanRequest(YUAN_REMINDER_API, {
+            method: 'POST',
+            body: at === undefined || at === null ? { text: value } : { text: value, at },
+          });
+          this.patchState({
+            reminders: Array.isArray(body.reminders) ? body.reminders : this.state !== null ? this.state.reminders : [],
+            signals: Array.isArray(body.signals) ? body.signals : this.state !== null ? this.state.signals : [],
+          });
+          return body;
+        } catch (error) {
+          this.set({ error: describeError(error) });
+          return null;
+        }
+      },
+      async completeReminder(id) {
+        if (typeof id !== 'string' || id === '') return null;
+        try {
+          const body = await yuanRequest(YUAN_REMINDER_DONE_API, { method: 'POST', body: { id } });
+          this.patchState({
+            reminders: Array.isArray(body.reminders) ? body.reminders : this.state !== null ? this.state.reminders : [],
+            signals: Array.isArray(body.signals) ? body.signals : this.state !== null ? this.state.signals : [],
+          });
+          return body;
+        } catch (error) {
+          this.set({ error: describeError(error) });
+          return null;
+        }
+      },
+      async markSeen() {
+        try {
+          const body = await yuanRequest(YUAN_SEEN_API, { method: 'POST', body: {} });
+          this.set({ lastSeenAt: typeof body.lastSeenAt === 'number' ? body.lastSeenAt : Date.now() });
+          this.patchState({ unread: null });
+        } catch {
+          /* 未读标记失败不影响面板 */
+        }
+      },
+      toggle() {
+        if (this.open) this.closePanel();
+        else this.openPanel();
+      },
+      openPanel() {
+        this.set({ open: true });
+        this.load();
+        this.markSeen();
+      },
+      closePanel() {
+        this.set({ open: false });
+      },
+    };
+
+    /** Subscribe a component to the Yuan store with the mini-React-compatible hooks. */
+    function useYuanStore() {
+      const [, forceRender] = useState(0);
+      useEffect(() => {
+        const unsubscribe = yuan.subscribe(() => forceRender((value) => value + 1));
+        if (yuan.state === null && !yuan.loading) yuan.load();
+        return unsubscribe;
+      }, []);
+      return yuan;
+    }
+
+    /** Composer-left entry button with the severity dot. */
+    function YuanEntry(props) {
+      const t = translatorFor(props);
+      const store = useYuanStore();
+      useEffect(() => {
+        store.pollSignals();
+        if (typeof setInterval !== 'function') return undefined;
+        const timer = setInterval(() => store.pollSignals(), 60000);
+        return () => clearInterval(timer);
+      }, [store]);
+      const severity = yuanSeverity(store.state);
+      const pending = pendingSuggestions(store.state !== null ? store.state.suggestions : EMPTY).length;
+      const title = pending > 0 ? t('yuanEntryTitle') + ' (' + pending + ')' : t('yuanEntryTitle');
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'ls-yuan-entry' + (store.open ? ' is-open' : ''),
+          title,
+          'aria-label': title,
+          'aria-expanded': store.open ? 'true' : 'false',
+          onClick: () => store.toggle(),
+        },
+        '\u6e90',
+        severity !== null ? h('span', { className: 'ls-yuan-dot is-' + severity, 'aria-hidden': 'true' }) : null,
+      );
+    }
+
+    function YuanSuggestionItem({ t, item, onAccept, onDismiss }) {
+      const reasons = item !== null && typeof item === 'object' && Array.isArray(item.reasons) ? item.reasons : EMPTY;
+      const source = yuanSourceLabel(item, t);
+      const id = item !== null && typeof item === 'object' && typeof item.id === 'string' ? item.id : '';
+      return h(
+        'article',
+        { className: 'ls-yuan-card' },
+        h('div', { className: 'ls-yuan-card__text' }, item !== null && typeof item.text === 'string' ? item.text : ''),
+        source !== '' ? h('div', { className: 'ls-yuan-card__meta' }, source) : null,
+        reasons.length > 0
+          ? h(
+              'div',
+              { className: 'ls-yuan-reasons' },
+              reasons.slice(0, 3).map((reason, index) =>
+                h('span', { key: 'reason-' + index, className: 'ls-yuan-reason' }, String(reason)),
+              ),
+            )
+          : null,
+        h(
+          'div',
+          { className: 'ls-yuan-actions' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ls-yuan-btn ls-yuan-btn--primary',
+              disabled: id === '',
+              onClick: () => onAccept(id),
+            },
+            t('yuanAccept'),
+          ),
+          h(
+            'button',
+            { type: 'button', className: 'ls-yuan-btn', disabled: id === '', onClick: () => onDismiss(id) },
+            t('yuanDismiss'),
+          ),
+        ),
+      );
+    }
+
+    /** Dashboard top card: pending count + first three suggestions. */
+    function YuanPageCard({ t, suggestions, error, onAccept, onDismiss, onOpen }) {
+      if (!Array.isArray(suggestions) || suggestions.length === 0) return null;
+      return h(
+        'section',
+        { className: 'ls-yuan-pagecard', 'aria-label': t('yuanSuggestionCard') },
+        h(
+          'div',
+          { className: 'ls-yuan-pagecard__head' },
+          h(
+            'div',
+            { className: 'ls-yuan-pagecard__title' },
+            h('span', { className: 'ls-yuan-title__icon', 'aria-hidden': 'true' }, '\u6e90'),
+            h('span', null, t('yuanSuggestionCard')),
+            h('span', { className: 'ls-yuan-pagecard__count' }, String(suggestions.length)),
+            h('span', { className: 'ls-yuan-card__meta' }, t('yuanPendingCount')),
+          ),
+          h('button', { type: 'button', className: 'ls-yuan-btn', onClick: onOpen }, t('yuanOpenPanel')),
+        ),
+        h(
+          'div',
+          { className: 'ls-yuan-pagecard__list' },
+          suggestions.slice(0, 3).map((item, index) => {
+            const id = item !== null && typeof item === 'object' && typeof item.id === 'string' ? item.id : '';
+            const source = yuanSourceLabel(item, t);
+            return h(
+              'div',
+              { key: id !== '' ? id : 'sug-' + index, className: 'ls-yuan-pagecard__row' },
+              h(
+                'div',
+                { className: 'ls-yuan-pagecard__text' },
+                item !== null && typeof item.text === 'string' ? item.text : '',
+                source !== '' ? h('span', { className: 'ls-yuan-pagecard__meta' }, source) : null,
+              ),
+              h(
+                'div',
+                { className: 'ls-yuan-actions' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'ls-yuan-btn ls-yuan-btn--primary',
+                    disabled: id === '',
+                    onClick: () => onAccept(id),
+                  },
+                  t('yuanAccept'),
+                ),
+                h(
+                  'button',
+                  { type: 'button', className: 'ls-yuan-btn', disabled: id === '', onClick: () => onDismiss(id) },
+                  t('yuanDismiss'),
+                ),
+              ),
+            );
+          }),
+        ),
+        error !== null
+          ? h('div', { className: 'ls-yuan-error' }, t('yuanError') + ': ' + error)
+          : null,
+      );
+    }
+
+    /** Composer dock panel: signals, suggestions, reminders, chat, memory. */
+    function YuanPanel(props) {
+      const t = translatorFor(props);
+      const store = useYuanStore();
+      const [memoryOpen, setMemoryOpen] = useState(false);
+      const [draft, setDraft] = useState('');
+      const [notice, setNotice] = useState(null);
+      const chatRef = useRef(null);
+      const sectionRefs = useRef({});
+      const chat = store.state !== null && Array.isArray(store.state.chat) ? store.state.chat : EMPTY;
+      useEffect(() => {
+        if (store.open) {
+          store.load();
+          store.markSeen();
+        }
+      }, [store.open]);
+      useEffect(() => {
+        const node = chatRef.current;
+        if (node !== null && node !== undefined) node.scrollTop = node.scrollHeight;
+      }, [chat.length, store.sending]);
+      if (store.open !== true) return null;
+      const state = store.state;
+      const suggestions = pendingSuggestions(state !== null ? state.suggestions : EMPTY);
+      const reminders =
+        state !== null && Array.isArray(state.reminders)
+          ? state.reminders.filter((item) => item !== null && typeof item === 'object' && item.done !== true)
+          : EMPTY;
+      const memory = state !== null && Array.isArray(state.memory) ? state.memory : EMPTY;
+      const signals = state !== null && Array.isArray(state.signals) ? state.signals : EMPTY;
+      const counts = yuanSignalCounts(state);
+      const model = state !== null && state.model !== null && typeof state.model === 'object' ? state.model : null;
+      const modelText =
+        model !== null && model.available === true
+          ? t('yuanModelLabel') + ': ' + [model.provider, model.model].filter((value) => typeof value === 'string' && value !== '').join(' / ')
+          : t('yuanModelOffline');
+      const signalTone = (kind) => {
+        let tone = '';
+        for (const signal of signals) {
+          if (signal === null || typeof signal !== 'object' || signal.kind !== kind) continue;
+          if (signal.severity === 'urgent') return 'urgent';
+          if (signal.severity === 'warn' && tone !== 'urgent') tone = 'warn';
+        }
+        return tone;
+      };
+      const scrollToSection = (key) => {
+        const node = sectionRefs.current[key];
+        if (node !== null && node !== undefined && typeof node.scrollIntoView === 'function') {
+          node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      };
+      const accept = (id) => {
+        store.acceptSuggestion(id).then((result) => {
+          setNotice(result !== null ? t('yuanAccepted') : null);
+        });
+      };
+      const dismiss = (id) => {
+        store.dismissSuggestion(id).then((result) => {
+          setNotice(result !== null ? t('yuanDismissed') : null);
+        });
+      };
+      const submit = () => {
+        const text = draft.trim();
+        if (text === '' || store.sending) return;
+        setDraft('');
+        store.send(text);
+      };
+      const signalChip = (kind, labelKey, sectionKey) => {
+        const tone = signalTone(kind);
+        const count = kind === 'suggestion' ? counts.suggestion : kind === 'reminder' ? counts.reminder : counts.deadline;
+        return h(
+          'button',
+          {
+            type: 'button',
+            className: 'ls-yuan-chip' + (tone === 'urgent' ? ' ls-yuan-chip--urgent' : tone === 'warn' ? ' ls-yuan-chip--warn' : ''),
+            onClick: () => scrollToSection(sectionKey),
+          },
+          t(labelKey) + ' ' + count,
+        );
+      };
+      return h(
+        'div',
+        { className: 'ls-yuan-panel', role: 'region', 'aria-label': t('yuanPanelAria') },
+        h(
+          'div',
+          { className: 'ls-yuan-head' },
+          h(
+            'div',
+            { className: 'ls-yuan-head__main' },
+            h(
+              'div',
+              { className: 'ls-yuan-title' },
+              h('span', { className: 'ls-yuan-title__icon', 'aria-hidden': 'true' }, '\u6e90'),
+              h('span', null, t('yuanName')),
+            ),
+            h('div', { className: 'ls-yuan-sub' }, modelText + ' \u00b7 ' + t('yuanSubtitle')),
+          ),
+          h(
+            'button',
+            { type: 'button', className: 'ls-yuan-close', title: t('yuanClose'), 'aria-label': t('yuanClose'), onClick: () => store.closePanel() },
+            '\u00d7',
+          ),
+        ),
+        notice !== null ? h('div', { className: 'ls-yuan-notice' }, notice) : null,
+        store.error !== null
+          ? h(
+              'div',
+              { className: 'ls-yuan-error' },
+              h('span', null, t('yuanError') + ': ' + store.error),
+              h('button', { type: 'button', className: 'ls-yuan-btn', onClick: () => store.load(true) }, t('yuanRetry')),
+            )
+          : null,
+        store.loading && state === null ? h('div', { className: 'ls-yuan-empty' }, t('yuanLoading')) : null,
+        signals.length === 0
+          ? h('div', { className: 'ls-yuan-empty' }, t('yuanSignalEmpty'))
+          : h(
+              'div',
+              { className: 'ls-yuan-chips' },
+              signalChip('suggestion', 'yuanChipSuggest', 'suggest'),
+              signalChip('reminder', 'yuanChipReminder', 'reminders'),
+              signalChip('deadline', 'yuanChipDeadline', 'reminders'),
+            ),
+        h(
+          'section',
+          { ref: (node) => { sectionRefs.current.suggest = node; }, className: 'ls-yuan-section' },
+          h(
+            'div',
+            { className: 'ls-yuan-section__title' },
+            h('span', null, t('yuanSuggestSection')),
+            h('span', { className: 'ls-yuan-pagecard__count' }, String(suggestions.length)),
+          ),
+          suggestions.length === 0
+            ? h('div', { className: 'ls-yuan-empty' }, t('yuanSuggestEmpty'))
+            : suggestions
+                .slice(0, 8)
+                .map((item, index) =>
+                  h(YuanSuggestionItem, {
+                    key: item !== null && typeof item.id === 'string' ? item.id : 'sug-' + index,
+                    t,
+                    item,
+                    onAccept: accept,
+                    onDismiss: dismiss,
+                  }),
+                ),
+        ),
+        h(
+          'section',
+          { ref: (node) => { sectionRefs.current.reminders = node; }, className: 'ls-yuan-section' },
+          h('div', { className: 'ls-yuan-section__title' }, h('span', null, t('yuanReminderSection')), h('span', { className: 'ls-yuan-pagecard__count' }, String(reminders.length))),
+          reminders.length === 0
+            ? h('div', { className: 'ls-yuan-empty' }, t('yuanReminderEmpty'))
+            : reminders.map((item, index) => {
+                const at = item !== null && typeof item.at === 'string' ? item.at : '';
+                const expired = at !== '' && Number.isFinite(Date.parse(at)) && Date.parse(at) <= Date.now();
+                return h(
+                  'article',
+                  { key: item !== null && typeof item.id === 'string' ? item.id : 'rem-' + index, className: 'ls-yuan-card' + (expired ? ' ls-yuan-card--expired' : '') },
+                  h('div', { className: 'ls-yuan-card__text' }, item !== null && typeof item.text === 'string' ? item.text : ''),
+                  h(
+                    'div',
+                    { className: 'ls-yuan-card__meta' + (expired ? ' ls-yuan-card__meta--error' : '') },
+                    at !== '' ? formatStamp(at) : '',
+                    expired ? h('span', null, t('yuanReminderExpired')) : null,
+                  ),
+                  h(
+                    'div',
+                    { className: 'ls-yuan-actions' },
+                    h(
+                      'button',
+                      { type: 'button', className: 'ls-yuan-btn', onClick: () => store.completeReminder(item !== null && typeof item.id === 'string' ? item.id : '') },
+                      t('yuanReminderDone'),
+                    ),
+                  ),
+                );
+              }),
+        ),
+        h(
+          'section',
+          { ref: (node) => { sectionRefs.current.chat = node; }, className: 'ls-yuan-section' },
+          h('div', { className: 'ls-yuan-section__title' }, h('span', null, t('yuanChatSection')), h('span', { className: 'ls-yuan-pagecard__count' }, String(chat.length))),
+          chat.length === 0
+            ? h('div', { className: 'ls-yuan-empty' }, t('yuanChatEmpty'))
+            : h(
+                'div',
+                { ref: (node) => { chatRef.current = node; }, className: 'ls-yuan-chat' },
+                chat.slice(-30).map((message, index) => {
+                  const role = yuanMessageRole(message);
+                  const proposals = yuanProposalList(message !== null && typeof message === 'object' ? message.proposals : null);
+                  return h(
+                    'div',
+                    { key: message !== null && typeof message.id === 'string' ? message.id : 'msg-' + index, className: 'ls-yuan-msg ls-yuan-msg--' + role },
+                    h('span', null, yuanMessageText(message)),
+                    proposals.length > 0
+                      ? h(
+                          'span',
+                          { className: 'ls-yuan-proposals' },
+                          proposals.slice(0, 4).map((proposal, proposalIndex) =>
+                            h(
+                              'span',
+                              { key: 'proposal-' + proposalIndex, className: 'ls-yuan-proposal' },
+                              h('span', null, yuanProposalLabel(proposal, t)),
+                              proposal !== null && typeof proposal === 'object' && typeof proposal.id === 'string' && proposal.kind === 'todo'
+                                ? h('button', { type: 'button', className: 'ls-yuan-btn', onClick: () => accept(proposal.id) }, t('yuanAccept'))
+                                : null,
+                            ),
+                          ),
+                        )
+                      : null,
+                    h(
+                      'span',
+                      { className: 'ls-yuan-msg__meta' },
+                      role === 'assistant' ? t('yuanAssistant') : t('yuanYou'),
+                      typeof message === 'object' && message !== null ? formatStamp(message.at) : '',
+                    ),
+                  );
+                }),
+              ),
+          store.sending ? h('div', { className: 'ls-yuan-thinking' }, t('yuanThinking')) : null,
+        ),
+        h(
+          'section',
+          { ref: (node) => { sectionRefs.current.memory = node; }, className: 'ls-yuan-section' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ls-yuan-memory-toggle',
+              'aria-expanded': memoryOpen ? 'true' : 'false',
+              onClick: () => setMemoryOpen((value) => !value),
+            },
+            (memoryOpen ? '\u25be ' : '\u25b8 ') +
+              t('yuanMemorySection') +
+              ' (' +
+              memory.length +
+              ')' +
+              ' \u00b7 ' +
+              (memoryOpen ? t('yuanCollapseMemory') : t('yuanExpandMemory')),
+          ),
+          memoryOpen
+            ? memory.length === 0
+              ? h('div', { className: 'ls-yuan-empty' }, t('yuanMemoryEmpty'))
+              : h(
+                  'div',
+                  { className: 'ls-yuan-memory' },
+                  memory.slice(0, 20).map((item, index) =>
+                    h(
+                      'span',
+                      { key: item !== null && typeof item.id === 'string' ? item.id : 'mem-' + index, className: 'ls-yuan-mem' },
+                      h('span', { className: 'ls-yuan-mem__text' }, item !== null && typeof item.text === 'string' ? item.text : ''),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'ls-yuan-mem__del',
+                          title: t('yuanMemoryDelete'),
+                          'aria-label': t('yuanMemoryDelete'),
+                          onClick: () => store.deleteMemory(item !== null && typeof item.id === 'string' ? item.id : ''),
+                        },
+                        '\u00d7',
+                      ),
+                    ),
+                  ),
+                )
+            : null,
+          h('span', { className: 'ls-yuan-hint' }, t('yuanRememberHint')),
+        ),
+        h(
+          'div',
+          { className: 'ls-yuan-composer' },
+          h('textarea', {
+            className: 'ls-yuan-input',
+            rows: 1,
+            value: draft,
+            placeholder: t('yuanInputPlaceholder'),
+            'aria-label': t('yuanInputPlaceholder'),
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' && event.shiftKey !== true) {
+                if (typeof event.preventDefault === 'function') event.preventDefault();
+                submit();
+              }
+            },
+          }),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ls-yuan-btn ls-yuan-btn--primary',
+              disabled: store.sending || draft.trim() === '',
+              onClick: submit,
+            },
+            store.sending ? t('yuanThinking') : t('yuanSend'),
+          ),
+        ),
+      );
+    }
+
     const PRIORITY_RANK = { highest: 0, high: 1, medium: 2, low: 3, lowest: 4 };
     const PRIORITY_LABEL_KEYS = {
       highest: 'priorityHighest',
@@ -165,6 +992,51 @@ window.__ModuleLoader__.load({
       actionDismiss: '关闭',
       checkDone: '标记完成',
       checkUndone: '标记未完成',
+      yuanName: '阿源',
+      yuanEntryTitle: '打开阿源',
+      yuanPanelAria: '阿源面板',
+      yuanSubtitle: '看板管家',
+      yuanModelLabel: '模型',
+      yuanModelOffline: '离线（模型不可用）',
+      yuanClose: '关闭',
+      yuanOpenPanel: '打开阿源面板',
+      yuanSuggestionCard: '阿源建议',
+      yuanPendingCount: '待确认',
+      yuanSourceSession: '来自会话',
+      yuanSourceNote: '来自笔记',
+      yuanSuggestSection: '待确认建议',
+      yuanSuggestEmpty: '暂无待确认建议',
+      yuanAccept: '接受',
+      yuanDismiss: '忽略',
+      yuanAccepted: '已接受',
+      yuanDismissed: '已忽略',
+      yuanReminderSection: '提醒',
+      yuanReminderEmpty: '暂无提醒',
+      yuanReminderDone: '完成',
+      yuanReminderExpired: '已过期',
+      yuanChatSection: '对话',
+      yuanChatEmpty: '还没有对话，问阿源点什么吧',
+      yuanThinking: '阿源正在想…',
+      yuanInputPlaceholder: '问阿源…（Enter 发送，Shift+Enter 换行）',
+      yuanSend: '发送',
+      yuanYou: '你',
+      yuanAssistant: '阿源',
+      yuanMemorySection: '记忆',
+      yuanMemoryEmpty: '还没有记忆',
+      yuanMemoryDelete: '删除记忆',
+      yuanRememberHint: '输入「记住：…」让阿源记住',
+      yuanLoading: '正在连接阿源…',
+      yuanError: '阿源出错',
+      yuanRetry: '重试',
+      yuanProposalTodo: '建议 todo',
+      yuanProposalMemory: '记住了',
+      yuanProposalReminder: '提醒',
+      yuanChipSuggest: '建议',
+      yuanChipReminder: '提醒',
+      yuanChipDeadline: '截止',
+      yuanExpandMemory: '展开记忆',
+      yuanCollapseMemory: '收起记忆',
+      yuanSignalEmpty: '暂无信号',
     };
 
     const en = {
@@ -260,6 +1132,51 @@ window.__ModuleLoader__.load({
       actionDismiss: 'Dismiss',
       checkDone: 'Mark done',
       checkUndone: 'Mark undone',
+      yuanName: 'Yuan',
+      yuanEntryTitle: 'Open Yuan',
+      yuanPanelAria: 'Yuan panel',
+      yuanSubtitle: 'Board assistant',
+      yuanModelLabel: 'Model',
+      yuanModelOffline: 'Offline (no model)',
+      yuanClose: 'Close',
+      yuanOpenPanel: 'Open Yuan panel',
+      yuanSuggestionCard: 'Yuan suggestions',
+      yuanPendingCount: 'pending',
+      yuanSourceSession: 'From a session',
+      yuanSourceNote: 'From a note',
+      yuanSuggestSection: 'Pending suggestions',
+      yuanSuggestEmpty: 'No pending suggestions',
+      yuanAccept: 'Accept',
+      yuanDismiss: 'Dismiss',
+      yuanAccepted: 'Accepted',
+      yuanDismissed: 'Dismissed',
+      yuanReminderSection: 'Reminders',
+      yuanReminderEmpty: 'No reminders',
+      yuanReminderDone: 'Done',
+      yuanReminderExpired: 'Overdue',
+      yuanChatSection: 'Chat',
+      yuanChatEmpty: 'No messages yet - ask Yuan something',
+      yuanThinking: 'Yuan is thinking…',
+      yuanInputPlaceholder: 'Ask Yuan… (Enter to send, Shift+Enter for newline)',
+      yuanSend: 'Send',
+      yuanYou: 'You',
+      yuanAssistant: 'Yuan',
+      yuanMemorySection: 'Memory',
+      yuanMemoryEmpty: 'No memories yet',
+      yuanMemoryDelete: 'Delete memory',
+      yuanRememberHint: 'Type "remember: …" to teach Yuan',
+      yuanLoading: 'Connecting to Yuan…',
+      yuanError: 'Yuan error',
+      yuanRetry: 'Retry',
+      yuanProposalTodo: 'Suggested todo',
+      yuanProposalMemory: 'Remembered',
+      yuanProposalReminder: 'Reminder',
+      yuanChipSuggest: 'Suggestions',
+      yuanChipReminder: 'Reminders',
+      yuanChipDeadline: 'Deadlines',
+      yuanExpandMemory: 'Expand memory',
+      yuanCollapseMemory: 'Collapse memory',
+      yuanSignalEmpty: 'No signals',
     };
 
     const CSS = `
@@ -410,6 +1327,78 @@ window.__ModuleLoader__.load({
 .ls-foot__line{display:flex;flex-wrap:wrap;gap:14px}
 .ls-foot__errors{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
 .ls-foot__error{color:var(--dsw-alias-state-warn-primary);word-break:break-word}
+.ls-yuan-entry{position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;padding:0 6px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;line-height:1;cursor:pointer;flex:none}
+.ls-yuan-entry:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-entry:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:2px}
+.ls-yuan-entry.is-open{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,var(--dsw-alias-border-l1))}
+.ls-yuan-dot{position:absolute;top:-2px;right:-2px;width:8px;height:8px;border-radius:50%;border:2px solid var(--dsw-alias-bg-layer-1);background:var(--dsw-alias-brand-primary);box-sizing:content-box}
+.ls-yuan-dot.is-urgent{background:var(--dsw-alias-state-error-primary)}
+.ls-yuan-dot.is-warn{background:var(--dsw-alias-state-warn-primary)}
+.ls-yuan-dot.is-info{background:var(--dsw-alias-brand-primary)}
+.ls-yuan-panel{margin:6px 0 4px;max-height:52vh;overflow-y:auto;box-sizing:border-box;padding:12px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.5;display:flex;flex-direction:column;gap:10px}
+.ls-yuan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.ls-yuan-head__main{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ls-yuan-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:6px}
+.ls-yuan-title__icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:var(--dsw-radius-xs);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent);color:var(--dsw-alias-brand-primary);font-size:12px;font-weight:600}
+.ls-yuan-sub{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ls-yuan-close{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1;cursor:pointer;flex:none}
+.ls-yuan-close:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-close:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-yuan-chips{display:flex;flex-wrap:wrap;gap:6px}
+.ls-yuan-chip{display:inline-flex;align-items:center;gap:4px;font:inherit;font-size:11px;line-height:20px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}
+.ls-yuan-chip:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-chip--urgent{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 40%,var(--dsw-alias-border-l1))}
+.ls-yuan-chip--warn{color:var(--dsw-alias-state-warn-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 40%,var(--dsw-alias-border-l1))}
+.ls-yuan-section{display:flex;flex-direction:column;gap:8px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1)}
+.ls-yuan-section__title{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+.ls-yuan-card{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2)}
+.ls-yuan-card--expired{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1))}
+.ls-yuan-card__text{font-size:13px;word-break:break-word}
+.ls-yuan-card__meta{font-size:11px;color:var(--dsw-alias-label-secondary);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ls-yuan-card__meta--error{color:var(--dsw-alias-state-error-primary)}
+.ls-yuan-reasons{display:flex;flex-wrap:wrap;gap:4px}
+.ls-yuan-reason{font-size:10px;line-height:16px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary)}
+.ls-yuan-actions{display:flex;flex-wrap:wrap;gap:6px}
+.ls-yuan-btn{display:inline-flex;align-items:center;justify-content:center;font:inherit;font-size:12px;line-height:22px;padding:0 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none}
+.ls-yuan-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+.ls-yuan-btn:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-yuan-btn:disabled{opacity:.5;cursor:default}
+.ls-yuan-btn--primary{border-color:transparent;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
+.ls-yuan-btn--primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);opacity:.9}
+.ls-yuan-empty{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-error{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:var(--dsw-alias-state-error-primary);word-break:break-word}
+.ls-yuan-notice{font-size:12px;color:var(--dsw-alias-state-success-primary)}
+.ls-yuan-chat{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;padding-right:2px}
+.ls-yuan-msg{max-width:88%;display:flex;flex-direction:column;gap:2px;padding:6px 9px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.ls-yuan-msg--user{align-self:flex-end;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);color:var(--dsw-alias-label-primary)}
+.ls-yuan-msg--assistant{align-self:flex-start;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-msg__meta{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-proposals{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.ls-yuan-proposal{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.ls-yuan-thinking{font-size:12px;color:var(--dsw-alias-label-secondary)}
+.ls-yuan-memory-toggle{display:inline-flex;align-items:center;gap:6px;align-self:flex-start;font:inherit;font-size:12px;line-height:22px;padding:0;border:none;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.ls-yuan-memory-toggle:hover{color:var(--dsw-alias-label-primary)}
+.ls-yuan-memory-toggle:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px;border-radius:var(--dsw-radius-sm)}
+.ls-yuan-memory{display:flex;flex-wrap:wrap;gap:6px}
+.ls-yuan-mem{display:inline-flex;align-items:center;gap:4px;max-width:100%;font-size:11px;line-height:18px;padding:0 4px 0 7px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
+.ls-yuan-mem__text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ls-yuan-mem__del{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;padding:0;border:none;border-radius:999px;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1;cursor:pointer;flex:none}
+.ls-yuan-mem__del:hover{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1)}
+.ls-yuan-composer{display:flex;align-items:flex-end;gap:6px}
+.ls-yuan-input{flex:1 1 auto;min-width:0;min-height:30px;max-height:88px;padding:6px 8px;font:inherit;font-size:13px;line-height:1.4;resize:none;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);outline:none}
+.ls-yuan-input::placeholder{color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-input:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px;border-color:transparent}
+.ls-yuan-hint{font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-pagecard{margin-bottom:16px;padding:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)}
+.ls-yuan-pagecard__head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.ls-yuan-pagecard__title{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600}
+.ls-yuan-pagecard__count{font-size:11px;font-weight:500;line-height:18px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
+.ls-yuan-pagecard__list{display:flex;flex-direction:column;gap:6px}
+.ls-yuan-pagecard__row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding-top:6px;border-top:1px solid var(--dsw-alias-border-l1)}
+.ls-yuan-pagecard__row:first-child{border-top:none;padding-top:0}
+.ls-yuan-pagecard__text{min-width:0;flex:1 1 240px;font-size:13px}
+.ls-yuan-pagecard__meta{font-size:11px;color:var(--dsw-alias-label-secondary);display:block;margin-top:2px}
+@media (max-width:720px){.ls-yuan-panel{max-height:60vh}.ls-yuan-pagecard{padding:12px}}
 @keyframes ls-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 @keyframes ls-pulse{0%,100%{opacity:.55}50%{opacity:1}}
 @media (max-width:720px){.ls-page{padding:20px 16px}.ls-stat{flex-basis:calc(50% - 5px)}.ls-badge{max-width:110px}.ls-tags{display:none}.ls-switch{margin-left:0}.ls-conn{max-width:200px}.ls-device-badge{max-width:90px}.ls-join__grid{grid-template-columns:1fr}}
@@ -1857,6 +2846,17 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
+      // Yuan (阿源) store: subscribe for the top suggestion card and apply boards
+      // returned by accepted suggestions.
+      const yuanStore = useYuanStore();
+      const appliedYuanBoard = useRef(0);
+      useEffect(() => {
+        if (yuanStore.boardSeq > 0 && yuanStore.boardSeq !== appliedYuanBoard.current && yuanStore.lastBoard !== null) {
+          appliedYuanBoard.current = yuanStore.boardSeq;
+          applyBoard(yuanStore.lastBoard);
+        }
+      }, [yuanStore.boardSeq, yuanStore.lastBoard, applyBoard]);
+
       const localDeviceId =
         snapshot !== null &&
         snapshot.device !== null &&
@@ -1892,6 +2892,14 @@ window.__ModuleLoader__.load({
         return count;
       }, [todos]);
       const shownGroups = groups.filter((group) => group.rows.length > 0);
+
+      const boardSuggestions =
+        snapshot !== null && Array.isArray(snapshot.suggestions) ? snapshot.suggestions : EMPTY;
+      const yuanSuggestions =
+        yuanStore.state !== null && Array.isArray(yuanStore.state.suggestions)
+          ? yuanStore.state.suggestions
+          : boardSuggestions;
+      const yuanPending = pendingSuggestions(yuanSuggestions);
 
       const mode =
         snapshot !== null && typeof snapshot.mode === 'string'
@@ -1932,6 +2940,15 @@ window.__ModuleLoader__.load({
         setQuery('');
         setSelectedSources(EMPTY);
         setSelectedDevices(EMPTY);
+      };
+      const acceptYuanSuggestion = (id) => {
+        yuanStore.acceptSuggestion(id);
+      };
+      const dismissYuanSuggestion = (id) => {
+        yuanStore.dismissSuggestion(id);
+      };
+      const openYuanPanel = () => {
+        yuanStore.openPanel();
       };
 
       // -- inline todo actions (v3) ----------------------------------------------
@@ -1998,6 +3015,14 @@ window.__ModuleLoader__.load({
         body = h(
           'div',
           { className: 'ls-body' },
+          h(YuanPageCard, {
+            t,
+            suggestions: yuanPending,
+            error: yuanStore.error,
+            onAccept: acceptYuanSuggestion,
+            onDismiss: dismissYuanSuggestion,
+            onOpen: openYuanPanel,
+          }),
           mode === 'local'
             ? h(JoinCard, {
                 t,
@@ -2169,6 +3194,39 @@ window.__ModuleLoader__.load({
             ),
           ),
         'leo-status: dashboard page',
+      );
+
+      // 阿源: composer-left entry button + expandable dock panel.
+      ctx.effect(
+        () =>
+          ctx.slots.inject('conversation.input.left', () =>
+            ctx.slots.register(
+              {
+                name: 'conversation.input.left',
+                id: 'leo-yuan',
+                order: 100,
+                locale: NS,
+              },
+              YuanEntry,
+            ),
+          ),
+        'leo-status: yuan entry',
+      );
+
+      ctx.effect(
+        () =>
+          ctx.slots.inject('conversation.input.dock', () =>
+            ctx.slots.register(
+              {
+                name: 'conversation.input.dock',
+                id: 'leo-yuan-panel',
+                order: 5,
+                locale: NS,
+              },
+              YuanPanel,
+            ),
+          ),
+        'leo-status: yuan panel',
       );
     }
 

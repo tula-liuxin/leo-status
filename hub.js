@@ -83,6 +83,19 @@ function sanitizeTodo(todo, index) {
     sessionId: typeof src.sessionId === 'string' ? src.sessionId : null,
     sessionTitle: typeof src.sessionTitle === 'string' ? src.sessionTitle : null,
     project: typeof src.project === 'string' ? src.project : null,
+    // v0.4：发现来源 / 可写性（旧快照缺省时按 markdown=可写、dsh=不可写兜底）
+    discoveredBy: typeof src.discoveredBy === 'string' ? src.discoveredBy : null,
+    writable:
+      src.writable === undefined || src.writable === null
+        ? src.kind === 'markdown'
+        : src.writable === true,
+    confidence:
+      typeof src.confidence === 'number' && Number.isFinite(src.confidence)
+        ? src.confidence
+        : src.kind === 'markdown'
+          ? 1
+          : 1,
+    headingStatus: typeof src.headingStatus === 'string' ? src.headingStatus : null,
   };
 }
 

@@ -16,12 +16,15 @@
 import os from 'node:os'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { promises as fsp } from 'node:fs'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { aggregate, EMPTY_STATS } from './scan.js'
+import { aggregate, EMPTY_STATS, detectVaults } from './scan.js'
 import { createHubStore, buildBoard, createHubHandler, startHubServer } from './hub.js'
 import { joinHub, pushSnapshot, fetchBoard, platformId, normalizeHubUrl } from './sync.js'
 import { applyTodoAction, EditError } from './edit.js'
+import { createSuggestionStore, deriveSuggestions } from './suggest.js'
+import { createYuanService } from './yuan.js'
 import {
   resolveDataDir,
   loadSettings,
@@ -35,12 +38,49 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.3.2'
+export const PLUGIN_VERSION = '0.4.0'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
 const STATUS_API = '/leo-status/api/hub/status'
 const ACTION_API = '/leo-status/api/todos/action'
+
+// v0.4：阿源 / 自动发现
+const YUAN_STATE_API = '/leo-status/api/yuan/state'
+const YUAN_SIGNALS_API = '/leo-status/api/yuan/signals'
+const YUAN_CHAT_API = '/leo-status/api/yuan/chat'
+const YUAN_SUGGEST_ACCEPT_API = '/leo-status/api/yuan/suggestion/accept'
+const YUAN_SUGGEST_DISMISS_API = '/leo-status/api/yuan/suggestion/dismiss'
+const YUAN_REMEMBER_API = '/leo-status/api/yuan/remember'
+const YUAN_MEMORY_DELETE_API = '/leo-status/api/yuan/memory/delete'
+const YUAN_MEMORY_ACCEPT_API = '/leo-status/api/yuan/memory/accept'
+const YUAN_REMINDER_API = '/leo-status/api/yuan/reminder'
+const YUAN_REMINDER_DONE_API = '/leo-status/api/yuan/reminder/done'
+const YUAN_SEEN_API = '/leo-status/api/yuan/seen'
+const VAULTS_API = '/leo-status/api/obsidian/vaults'
+const VAULT_ATTACH_API = '/leo-status/api/obsidian/attach'
+const SETTINGS_API = '/leo-status/api/settings'
+
+const API_ROUTES = [
+  LOCAL_API,
+  JOIN_API,
+  STATUS_API,
+  ACTION_API,
+  YUAN_STATE_API,
+  YUAN_SIGNALS_API,
+  YUAN_CHAT_API,
+  YUAN_SUGGEST_ACCEPT_API,
+  YUAN_SUGGEST_DISMISS_API,
+  YUAN_REMEMBER_API,
+  YUAN_MEMORY_DELETE_API,
+  YUAN_MEMORY_ACCEPT_API,
+  YUAN_REMINDER_API,
+  YUAN_REMINDER_DONE_API,
+  YUAN_SEEN_API,
+  VAULTS_API,
+  VAULT_ATTACH_API,
+  SETTINGS_API,
+]
 
 const LOCAL_DEVICE_ID = 'local'
 const LOCAL_SCAN_TTL_MS = 10_000
@@ -162,7 +202,7 @@ export function apply(ctx, config) {
     if (!force && localCache.snapshot && Date.now() - localCache.at < LOCAL_SCAN_TTL_MS) {
       return localCache.snapshot
     }
-    const snapshot = await aggregate(effectiveScanConfig(rowConfig, settings), { force: true })
+    const snapshot = await aggregate(effectiveScanConfig(rowConfig, settings, dataDir), { force: true })
     localCache = { at: Date.now(), snapshot }
     return snapshot
   }
@@ -170,6 +210,194 @@ export function apply(ctx, config) {
   const emptyStore = {
     listDevices: () => [],
     getSnapshots: () => [],
+  }
+
+  /* ------------------------- v0.4：建议箱 / 阿源 ------------------------- */
+
+  /** 建议箱（suggest.js）与阿源（yuan.js）都懒初始化；启动完成后可用。 */
+  let suggestionStore = null
+  let yuanService = null
+  let llm = null
+  let agentDefaultModel = null
+
+  /** llm 是动态注入的；用 getter 桥避免初始化顺序问题。 */
+  const llmBridge = {
+    get stream() {
+      return llm !== null && llm !== undefined && typeof llm.stream === 'function' ? llm.stream.bind(llm) : undefined
+    },
+    listProviders() {
+      return llm !== null && llm !== undefined && typeof llm.listProviders === 'function' ? llm.listProviders() : []
+    },
+  }
+
+  /** 阿源模型：默认模型选择 → settings.yuan.model → null（yuan.js 内部有兜底）。 */
+  function yuanGetModel() {
+    try {
+      if (agentDefaultModel !== null && agentDefaultModel !== undefined && typeof agentDefaultModel.currentSelection === 'function') {
+        const selection = agentDefaultModel.currentSelection()
+        if (selection !== null && typeof selection === 'object' && typeof selection.provider === 'string' && typeof selection.model === 'string') {
+          return selection
+        }
+      }
+    } catch (error) {
+      log('yuan: default model unavailable:', describeError(error))
+    }
+    return settings.yuan.model
+  }
+
+  function invalidateBoards() {
+    localCache = { at: 0, snapshot: null }
+    boardCache = { at: 0, board: null }
+    lastBoard = null
+    lastSyncMs = 0
+  }
+
+  async function initV042() {
+    try {
+      suggestionStore = createSuggestionStore(dataDir)
+      await suggestionStore.load()
+      yuanService = createYuanService({
+        dataDir,
+        log,
+        llm: llmBridge,
+        getModel: yuanGetModel,
+        config: settings,
+      })
+      await yuanService.ensureLoaded()
+      log('yuan ready · suggestions + memory loaded')
+    } catch (error) {
+      log('v0.4 init failed:', describeError(error))
+    }
+  }
+
+  /** 设置脱敏（去掉密码，供 UI 读取）。 */
+  function safeSettings() {
+    const copy = JSON.parse(JSON.stringify(settings))
+    if (copy.hub && typeof copy.hub === 'object') delete copy.hub.password
+    if (copy.device && typeof copy.device === 'object') delete copy.device.password
+    return copy
+  }
+
+  function depMerge(base, patch) {
+    const out = JSON.parse(JSON.stringify(base))
+    const put = (target, source) => {
+      for (const [key, value] of Object.entries(source)) {
+        if (value !== null && typeof value === 'object' && !Array.isArray(value) && target[key] !== null && typeof target[key] === 'object' && !Array.isArray(target[key])) {
+          put(target[key], value)
+        } else if (value !== undefined) {
+          target[key] = JSON.parse(JSON.stringify(value))
+        }
+      }
+    }
+    if (patch !== null && typeof patch === 'object' && !Array.isArray(patch)) put(out, patch)
+    return out
+  }
+
+  /** 只允许从 UI 修改的字段（模式/密码/隧道不在此列）。 */
+  function applySettingsPatch(patch) {
+    const source = patch !== null && typeof patch === 'object' ? patch : {}
+    const allowed = {
+      obsidian: source.obsidian,
+      sessionFilter: source.sessionFilter,
+      yuan: source.yuan,
+      includeDshTodos: source.includeDshTodos,
+      includeDshCompleted: source.includeDshCompleted,
+      syncIntervalMs: source.syncIntervalMs,
+      markdownRoots: source.markdownRoots,
+    }
+    const clean = {}
+    for (const [key, value] of Object.entries(allowed)) if (value !== undefined) clean[key] = value
+    return normalizeSettings(depMerge(settings, clean))
+  }
+
+  function suggestionToTodo(item) {
+    const deviceId = localDeviceId()
+    return {
+      id: `${deviceId}:${item.id}`,
+      kind: 'suggestion',
+      text: item.text,
+      raw: '',
+      done: false,
+      cancelled: false,
+      sourceId: 'yuan',
+      sourceLabel: '阿源',
+      file: null,
+      relPath: null,
+      line: 0,
+      heading: null,
+      indent: 0,
+      noteDate: null,
+      due: null,
+      scheduled: null,
+      start: null,
+      priority: 'none',
+      tags: [],
+      links: [],
+      recurrence: null,
+      sessionId: item.sessionId ?? null,
+      sessionTitle: item.sessionTitle ?? null,
+      project: item.project ?? null,
+      deviceId,
+      deviceName: localDeviceInfo().name,
+      local: true,
+      editable: false,
+      writable: false,
+      discoveredBy: 'yuan',
+      acceptedAt: item.acceptedAt ?? nowIso(),
+      suggestionId: item.id,
+    }
+  }
+
+  /**
+   * 看板增强：派生会话建议 → 合并建议箱 → accepted 变 todo → 阿源信号。
+   * 失败只降级（不阻断看板）。
+   */
+  async function augmentBoard(board, snapshot) {
+    if (board === null || typeof board !== 'object' || board.ok === false) return board
+    let pending = []
+    let accepted = []
+    try {
+      if (suggestionStore !== null && snapshot !== null && typeof snapshot === 'object') {
+        const derived = deriveSuggestions(snapshot, { filter: settings.sessionFilter, now: Date.now() })
+        await suggestionStore.mergeDerived(derived.items)
+      }
+      if (suggestionStore !== null) {
+        pending = suggestionStore.list('pending')
+        accepted = suggestionStore.list('accepted')
+      }
+    } catch (error) {
+      log('augmentBoard suggestions failed:', describeError(error))
+    }
+
+    const todos = Array.isArray(board.todos) ? [...board.todos] : []
+    const seen = new Set(todos.map((todo) => todo.id))
+    for (const item of accepted) {
+      if (item === null || typeof item !== 'object' || typeof item.id !== 'string') continue
+      const todo = suggestionToTodo(item)
+      if (seen.has(todo.id)) continue
+      todos.push(todo)
+      seen.add(todo.id)
+    }
+
+    const out = { ...board, todos, suggestions: pending }
+    try {
+      if (yuanService !== null) {
+        const payload = await yuanService.statePayload({ board: out, suggestions: pending })
+        out.yuan = { name: payload.name, signals: payload.signals, badge: payload.badge, unread: payload.unread }
+      }
+    } catch (error) {
+      log('augmentBoard yuan failed:', describeError(error))
+    }
+
+    if (out.stats !== null && typeof out.stats === 'object' && accepted.length > 0) {
+      const openAccepted = accepted.filter((item) => item && item.done !== true).length
+      out.stats = {
+        ...out.stats,
+        ...(Number.isFinite(out.stats.total) ? { total: out.stats.total + accepted.length } : {}),
+        ...(Number.isFinite(out.stats.open) ? { open: out.stats.open + openAccepted } : {}),
+      }
+    }
+    return out
   }
 
   function buildLocalBoard(snapshot, meta) {
@@ -186,7 +414,8 @@ export function apply(ctx, config) {
   async function localBoard(force, meta) {
     try {
       const snapshot = await scanLocal(force)
-      return buildLocalBoard(snapshot, meta ?? baseMeta())
+      const board = buildLocalBoard(snapshot, meta ?? baseMeta())
+      return await augmentBoard(board, snapshot)
     } catch (error) {
       return failureBoard(describeError(error), meta ?? baseMeta())
     }
@@ -233,11 +462,12 @@ export function apply(ctx, config) {
   async function hubBoard(force) {
     const snapshot = await scanLocal(force)
     if (!hubRuntime || !hubRuntime.store) {
-      return buildLocalBoard(snapshot, baseMeta({
+      const local = buildLocalBoard(snapshot, baseMeta({
         hub: { connected: false, lastSyncAt, error: hubError ?? settingsError, relay: relayMeta() },
       }))
+      return augmentBoard(local, snapshot)
     }
-    return buildBoard({
+    const board = buildBoard({
       local: snapshot,
       localDevice: localDeviceInfo(),
       store: hubRuntime.store,
@@ -245,6 +475,7 @@ export function apply(ctx, config) {
       syncIntervalMs: settings.syncIntervalMs,
       meta: baseMeta(),
     })
+    return augmentBoard(board, snapshot)
   }
 
   async function ensureHub() {
@@ -535,10 +766,16 @@ export function apply(ctx, config) {
     }
     // device
     const fresh = lastBoard !== null && Date.now() - lastSyncMs < DEVICE_BOARD_TTL_MS
-    if (!force && fresh) return localize(lastBoard)
+    if (!force && fresh) {
+      const localized = localize(lastBoard)
+      if (localCache.snapshot !== null) return augmentBoard(localized, localCache.snapshot)
+      return localized
+    }
     try {
       const board = await ensureSync(force)
-      return localize(board)
+      const localized = localize(board)
+      if (localCache.snapshot !== null) return augmentBoard(localized, localCache.snapshot)
+      return localized
     } catch (error) {
       return deviceFallback(error)
     }
@@ -648,7 +885,18 @@ export function apply(ctx, config) {
     const id = normalizeTodoId(body.id)
     if (id === '') throw new EditError('not-found', '缺少 todo id')
 
-    const scanConfig = effectiveScanConfig(rowConfig, settings)
+    // 阿源接受的建议不是笔记行：只支持「移除」（回到未接受状态需重新 accept）。
+    if (id.startsWith('sug:')) {
+      if (action !== 'delete') throw new EditError('unsupported', '阿源建议只支持移除')
+      if (suggestionStore === null) throw new EditError('not-found', '建议箱尚未就绪')
+      const removed = suggestionStore.remove(id)
+      if (!removed) throw new EditError('not-found', '建议不存在或已被处理')
+      invalidateBoards()
+      const board = await getBoard(true)
+      return { ok: true, action: 'delete', line: 0, raw: '', todo: null, board }
+    }
+
+    const scanConfig = effectiveScanConfig(rowConfig, settings, dataDir)
     const snapshot = await aggregate(scanConfig, { force: true })
     const target = snapshot.todos.find((todo) => todo.kind === 'markdown' && todo.id === id)
     if (!target) throw new EditError('not-found', '找不到这条 todo（可能已被删除或文件已变化），请刷新后再试')
@@ -694,6 +942,7 @@ export function apply(ctx, config) {
     settingsError = loaded.error
     if (settingsError) log(settingsError)
     log(`mode=${settings.mode}`, `dataDir=${dataDir}`)
+    await initV042()
     if (isHub()) {
       await ensureHub()
     } else if (isDevice()) {
@@ -716,6 +965,15 @@ export function apply(ctx, config) {
       stopHub()
     }
   }, 'leo-status: runtime')
+
+  // 阿源用的宿主服务：llm 是硬能力（缺了自动降级），默认模型选择是可选增强。
+  ctx.inject(['llm'], (services) => {
+    llm = services.llm
+    log('llm service ready ·阿源可调用模型')
+  })
+  ctx.inject(['agentDefaultModel'], (services) => {
+    agentDefaultModel = services.agentDefaultModel
+  })
 
   /* ---------------------------------- HTTP --------------------------------- */
 
@@ -771,6 +1029,225 @@ export function apply(ctx, config) {
       )
     } catch (error) {
       log('page token injection unavailable:', describeError(error))
+    }
+
+    /* ------------------------- v0.4 路由辅助 ------------------------- */
+
+    const normPath = (value) => {
+      try {
+        const resolved = path.resolve(String(value ?? ''))
+        return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+      } catch {
+        return String(value ?? '').toLowerCase()
+      }
+    }
+
+    const plainText = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+
+    function pendingSuggestions() {
+      return suggestionStore !== null ? suggestionStore.list('pending') : []
+    }
+
+    async function yuanState() {
+      const board = await getBoard(false)
+      const suggestions = Array.isArray(board?.suggestions) ? board.suggestions : pendingSuggestions()
+      if (yuanService === null) {
+        return {
+          ok: true,
+          name: '阿源',
+          signals: [],
+          badge: { total: 0, urgent: 0, kinds: {}, hasUnread: false },
+          unread: false,
+          suggestions,
+          chat: [],
+          memory: [],
+          reminders: [],
+          model: { provider: null, model: null, available: false },
+        }
+      }
+      const payload = await yuanService.statePayload({ board, suggestions, chatLimit: 30 })
+      return { ok: true, ...payload, suggestions }
+    }
+
+    async function yuanSignals() {
+      const board = boardCache.board ?? lastBoard ?? null
+      const suggestions = pendingSuggestions()
+      if (yuanService === null) {
+        return { ok: true, signals: [], badge: { total: 0, urgent: 0, kinds: {}, hasUnread: false }, unread: false, pending: suggestions.length }
+      }
+      const payload = await yuanService.statePayload({ board, suggestions, chatLimit: 0 })
+      return { ok: true, signals: payload.signals, badge: payload.badge, unread: payload.unread, pending: suggestions.length }
+    }
+
+    async function yuanChat(body) {
+      if (yuanService === null) throw new Error('阿源尚未就绪，请稍后重试')
+      const message = typeof body?.message === 'string' ? body.message.trim() : ''
+      if (message === '') throw new Error('消息不能为空')
+      const board = await getBoard(false)
+      const suggestions = Array.isArray(board?.suggestions) ? board.suggestions : pendingSuggestions()
+      const result = await yuanService.chat(message, { board, suggestions })
+      const created = []
+      if (Array.isArray(result.proposals) && result.proposals.length > 0 && suggestionStore !== null) {
+        const items = result.proposals.map((proposal) => {
+          const text = plainText(proposal?.text)
+          const id = `sug:${createHash('sha1').update(`yuan\u0000${text}`).digest('hex').slice(0, 16)}`
+          return {
+            id,
+            text,
+            normalized: text,
+            source: 'yuan',
+            sessionId: null,
+            sessionTitle: null,
+            project: null,
+            kind: 'relevant',
+            score: 1,
+            bucket: 'accept',
+            reasons: ['阿源提议'],
+            status: 'pending',
+            createdAt: nowIso(),
+          }
+        })
+        try {
+          const merged = await suggestionStore.mergeDerived(items)
+          created.push(...(merged?.added ?? []).map((item) => item.id))
+        } catch (error) {
+          log('yuan proposal merge failed:', describeError(error))
+        }
+        invalidateBoards()
+      }
+      const fresh = await getBoard(false)
+      return {
+        ok: true,
+        reply: result.reply,
+        chat: result.chat,
+        proposals: result.proposals,
+        suggestions: Array.isArray(fresh?.suggestions) ? fresh.suggestions : pendingSuggestions(),
+        signals: fresh?.yuan?.signals ?? [],
+        badge: fresh?.yuan?.badge ?? { total: 0, urgent: 0, kinds: {}, hasUnread: false },
+        created,
+      }
+    }
+
+    async function acceptSuggestion(body) {
+      const id = typeof body?.id === 'string' ? body.id.trim() : ''
+      if (id === '') throw new Error('缺少建议 id')
+      if (suggestionStore === null) throw new Error('建议箱尚未就绪')
+      const item = suggestionStore.accept(id)
+      if (item === null || item === undefined) throw new Error('建议不存在或已被处理')
+      invalidateBoards()
+      const board = await getBoard(true)
+      return { ok: true, item, suggestions: pendingSuggestions(), board }
+    }
+
+    async function dismissSuggestion(body) {
+      const id = typeof body?.id === 'string' ? body.id.trim() : ''
+      if (id === '') throw new Error('缺少建议 id')
+      if (suggestionStore === null) throw new Error('建议箱尚未就绪')
+      const item = suggestionStore.dismiss(id)
+      if (item === null || item === undefined) throw new Error('建议不存在或已被处理')
+      invalidateBoards()
+      return { ok: true, item, suggestions: pendingSuggestions() }
+    }
+
+    async function memoryList() {
+      if (yuanService === null) return []
+      return yuanService.memory.slice(-200)
+    }
+
+    async function remember(body) {
+      if (yuanService === null) throw new Error('阿源尚未就绪')
+      const text = plainText(body?.text)
+      if (text === '') throw new Error('记忆内容不能为空')
+      const memory = await yuanService.remember(text)
+      return { ok: true, memory, memories: await memoryList() }
+    }
+
+    async function forgetMemory(body) {
+      if (yuanService === null) throw new Error('阿源尚未就绪')
+      const id = typeof body?.id === 'string' ? body.id.trim() : ''
+      if (id === '') throw new Error('缺少记忆 id')
+      const ok = await yuanService.forget(id)
+      return { ok, memories: await memoryList() }
+    }
+
+    async function acceptMemory(body) {
+      if (yuanService === null) throw new Error('阿源尚未就绪')
+      const id = typeof body?.id === 'string' ? body.id.trim() : ''
+      if (id === '') throw new Error('缺少记忆 id')
+      const memory = await yuanService.acceptMemory(id)
+      return { ok: memory !== null, memory, memories: await memoryList() }
+    }
+
+    async function addReminder(body) {
+      if (yuanService === null) throw new Error('阿源尚未就绪')
+      const text = plainText(body?.text)
+      const at = typeof body?.at === 'string' ? body.at : ''
+      if (text === '') throw new Error('提醒内容不能为空')
+      const reminder = await yuanService.addReminder(text, at)
+      const payload = await yuanService.statePayload({ board: boardCache.board ?? lastBoard, suggestions: pendingSuggestions(), chatLimit: 0 })
+      return { ok: true, reminder, reminders: payload.reminders, signals: payload.signals, badge: payload.badge }
+    }
+
+    async function finishReminder(body) {
+      if (yuanService === null) throw new Error('阿源尚未就绪')
+      const id = typeof body?.id === 'string' ? body.id.trim() : ''
+      if (id === '') throw new Error('缺少提醒 id')
+      const reminder = await yuanService.doneReminder(id)
+      if (reminder === null) throw new Error('提醒不存在')
+      const payload = await yuanService.statePayload({ board: boardCache.board ?? lastBoard, suggestions: pendingSuggestions(), chatLimit: 0 })
+      return { ok: true, reminder, reminders: payload.reminders, signals: payload.signals, badge: payload.badge }
+    }
+
+    async function markSeen() {
+      const lastSeenAt = yuanService !== null ? await yuanService.markSeen() : Date.now()
+      return { ok: true, lastSeenAt }
+    }
+
+    async function vaultList() {
+      const vaults = await detectVaults({
+        searchRoots: settings.obsidian.searchRoots,
+        maxDepth: settings.obsidian.maxDepth,
+      })
+      const attached = new Set(settings.markdownRoots.map((root) => normPath(root.path)))
+      return {
+        ok: true,
+        vaults: (Array.isArray(vaults) ? vaults : []).map((vault) => ({ ...vault, attached: attached.has(normPath(vault.path)) })),
+        searchRoots: settings.obsidian.searchRoots,
+        autoDetect: settings.obsidian.autoDetect,
+      }
+    }
+
+    async function attachVault(body) {
+      const raw = typeof body?.path === 'string' ? body.path.trim() : ''
+      if (raw === '') throw new Error('缺少 vault 路径')
+      const abs = path.resolve(raw)
+      let stat
+      try {
+        stat = await fsp.stat(abs)
+      } catch (error) {
+        throw new Error(`目录不可访问：${describeError(error)}`)
+      }
+      if (!stat.isDirectory()) throw new Error('路径不是文件夹')
+      const exists = settings.markdownRoots.some((root) => normPath(root.path) === normPath(abs))
+      if (!exists) {
+        const id = `vault-${createHash('sha1').update(normPath(abs)).digest('hex').slice(0, 8)}`
+        const label = typeof body?.label === 'string' && body.label.trim() !== '' ? body.label.trim().slice(0, 60) : path.basename(abs) || 'Obsidian'
+        const roots = [...settings.markdownRoots, { id, label, path: abs }]
+        settings = await saveSettings(dataDir, normalizeSettings({ ...settings, markdownRoots: roots }))
+        invalidateBoards()
+        log('vault attached:', abs)
+      }
+      const board = await getBoard(true)
+      return { ok: true, roots: settings.markdownRoots, board }
+    }
+
+    async function updateSettings(body) {
+      const next = applySettingsPatch(body)
+      settings = await saveSettings(dataDir, next)
+      invalidateBoards()
+      await initV042()
+      const board = await getBoard(true).catch((error) => failureBoard(describeError(error)))
+      return { ok: true, settings: safeSettings(), board }
     }
 
     const handler = async (req, res) => {
@@ -840,6 +1317,162 @@ export function apply(ctx, config) {
           return
         }
 
+        /* ------------------------- v0.4：阿源 / 自动发现 ------------------------- */
+
+        if (path === YUAN_STATE_API) {
+          if (req.method !== 'GET') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          sendJson(res, 200, await yuanState())
+          return
+        }
+
+        if (path === YUAN_SIGNALS_API) {
+          if (req.method !== 'GET') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          sendJson(res, 200, await yuanSignals())
+          return
+        }
+
+        if (path === YUAN_CHAT_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            sendJson(res, 200, await yuanChat(body))
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
+        if (path === YUAN_SUGGEST_ACCEPT_API || path === YUAN_SUGGEST_DISMISS_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            const result = path === YUAN_SUGGEST_ACCEPT_API ? await acceptSuggestion(body) : await dismissSuggestion(body)
+            sendJson(res, 200, result)
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
+        if (path === YUAN_REMEMBER_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            sendJson(res, 200, await remember(body))
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
+        if (path === YUAN_MEMORY_DELETE_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            sendJson(res, 200, await forgetMemory(body))
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
+        if (path === YUAN_MEMORY_ACCEPT_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            sendJson(res, 200, await acceptMemory(body))
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
+        if (path === YUAN_REMINDER_API || path === YUAN_REMINDER_DONE_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            const result = path === YUAN_REMINDER_API ? await addReminder(body) : await finishReminder(body)
+            sendJson(res, 200, result)
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
+        if (path === YUAN_SEEN_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          sendJson(res, 200, await markSeen())
+          return
+        }
+
+        if (path === VAULTS_API) {
+          if (req.method !== 'GET') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          sendJson(res, 200, await vaultList())
+          return
+        }
+
+        if (path === VAULT_ATTACH_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            sendJson(res, 200, await attachVault(body))
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
+        if (path === SETTINGS_API) {
+          if (req.method === 'GET') {
+            sendJson(res, 200, { ok: true, settings: safeSettings(), dataDir, version: PLUGIN_VERSION })
+            return
+          }
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            sendJson(res, 200, await updateSettings(body))
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: describeError(error) })
+          }
+          return
+        }
+
         sendJson(res, 404, { ok: false, error: 'not found' })
       } catch (error) {
         try {
@@ -850,13 +1483,13 @@ export function apply(ctx, config) {
       }
     }
 
-    for (const routePath of [LOCAL_API, JOIN_API, STATUS_API, ACTION_API]) {
+    for (const routePath of API_ROUTES) {
       ctx.effect(
         () => http.webServer.register({ kind: 'exact', path: routePath, handler }),
         `leo-status: ${routePath}`,
       )
     }
-    log('routes ready ·', [LOCAL_API, JOIN_API, STATUS_API, ACTION_API].join(', '))
+    log('routes ready ·', API_ROUTES.join(', '))
   })
 }
 
