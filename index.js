@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process'
 import { aggregate, EMPTY_STATS } from './scan.js'
 import { createHubStore, buildBoard, createHubHandler, startHubServer } from './hub.js'
 import { joinHub, pushSnapshot, fetchBoard, platformId, normalizeHubUrl } from './sync.js'
+import { applyTodoAction, EditError } from './edit.js'
 import {
   resolveDataDir,
   loadSettings,
@@ -33,11 +34,12 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.2.0'
+export const PLUGIN_VERSION = '0.3.0'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
 const STATUS_API = '/leo-status/api/hub/status'
+const ACTION_API = '/leo-status/api/todos/action'
 
 const LOCAL_DEVICE_ID = 'local'
 const LOCAL_SCAN_TTL_MS = 10_000
@@ -98,6 +100,8 @@ export function apply(ctx, config) {
   let syncRunning = null
   let hubStarting = null
   let hubRuntime = null
+  /** 写操作串行化：同一文件的 cancel/restore/delete 不并发。 */
+  let actionQueue = Promise.resolve()
 
   /** @type {{child: any, state: string, error: string|null, restarts: number, timer: any, stopping: boolean}} */
   let tunnel = { child: null, state: 'disabled', error: null, restarts: 0, timer: null, stopping: false }
@@ -607,6 +611,73 @@ export function apply(ctx, config) {
     }
   }
 
+  /* ------------------------------ 行内写操作（v3） ----------------------------- */
+
+  /** 把 Board 里的 id 归一化回本地扫描快照里的 `md:...` id。 */
+  function normalizeTodoId(boardId) {
+    const text = typeof boardId === 'string' ? boardId : ''
+    if (text === '') return ''
+    const deviceId = settings.device.deviceId
+    if (isDevice() && deviceId && text.startsWith(`${deviceId}:`)) return text.slice(deviceId.length + 1)
+    if (text.startsWith('local:')) return text.slice('local:'.length)
+    return text
+  }
+
+  function actionStatus(error) {
+    if (!(error instanceof EditError)) return 500
+    if (error.code === 'changed') return 409
+    if (error.code === 'not-found') return 404
+    if (error.code === 'outside-roots' || error.code === 'unsupported') return 400
+    return 500
+  }
+
+  async function performTodoAction(body) {
+    const action = body !== null && typeof body === 'object' ? body.action : null
+    if (action !== 'cancel' && action !== 'restore' && action !== 'delete') {
+      throw new EditError('unsupported', '不支持的操作')
+    }
+    const id = normalizeTodoId(body.id)
+    if (id === '') throw new EditError('not-found', '缺少 todo id')
+
+    const scanConfig = effectiveScanConfig(rowConfig, settings)
+    const snapshot = await aggregate(scanConfig, { force: true })
+    const target = snapshot.todos.find((todo) => todo.kind === 'markdown' && todo.id === id)
+    if (!target) throw new EditError('not-found', '找不到这条 todo（可能已被删除或文件已变化），请刷新后再试')
+
+    const result = await applyTodoAction({
+      action,
+      filePath: target.file,
+      line: target.line,
+      raw: target.raw,
+      roots: scanConfig.markdownRoots,
+    })
+
+    // 让下一次扫描重读文件，并把最新 Board 返回给客户端。
+    localCache = { at: 0, snapshot: null }
+    boardCache = { at: 0, board: null }
+    const board = await getBoard(true)
+    const updated = Array.isArray(board.todos)
+      ? board.todos.find((todo) => normalizeTodoId(todo.id) === id || (id !== '' && todo.id.endsWith(id)))
+      : null
+    return {
+      ok: true,
+      action,
+      line: result.line,
+      raw: result.raw,
+      todo: action === 'delete' ? null : updated ?? null,
+      board,
+    }
+  }
+
+  function enqueueAction(operation) {
+    const run = actionQueue.then(operation, operation)
+    actionQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
   /* -------------------------------- 启动/生命周期 ------------------------------ */
 
   async function startup() {
@@ -623,8 +694,12 @@ export function apply(ctx, config) {
     }
   }
 
+  /** 设置加载完成前到达的请求要等它，避免用默认设置先扫一遍。 */
+  let startupPromise = null
+
   ctx.effect(() => {
-    startup().catch((error) => {
+    startupPromise = startup()
+    startupPromise.catch((error) => {
       hubError = describeError(error)
       log('startup failed:', hubError)
     })
@@ -649,6 +724,13 @@ export function apply(ctx, config) {
       const path = url.pathname
       try {
         if (!authorized(req, res)) return
+        if (startupPromise !== null) {
+          try {
+            await startupPromise
+          } catch {
+            /* startup 自己会记录错误；这里只等它结束 */
+          }
+        }
 
         if (path === LOCAL_API) {
           if (req.method !== 'GET') {
@@ -685,6 +767,25 @@ export function apply(ctx, config) {
           return
         }
 
+        if (path === ACTION_API) {
+          if (req.method !== 'POST') {
+            sendJson(res, 405, { ok: false, error: 'method not allowed' })
+            return
+          }
+          const body = await readJsonBody(req)
+          try {
+            const result = await enqueueAction(() => performTodoAction(body))
+            sendJson(res, 200, result)
+          } catch (error) {
+            sendJson(res, actionStatus(error), {
+              ok: false,
+              code: error instanceof EditError ? error.code : null,
+              error: describeError(error),
+            })
+          }
+          return
+        }
+
         sendJson(res, 404, { ok: false, error: 'not found' })
       } catch (error) {
         try {
@@ -695,12 +796,12 @@ export function apply(ctx, config) {
       }
     }
 
-    for (const routePath of [LOCAL_API, JOIN_API, STATUS_API]) {
+    for (const routePath of [LOCAL_API, JOIN_API, STATUS_API, ACTION_API]) {
       ctx.effect(
         () => http.webServer.register({ kind: 'exact', path: routePath, handler }),
         `leo-status: ${routePath}`,
       )
     }
-    log('routes ready ·', [LOCAL_API, JOIN_API, STATUS_API].join(', '))
+    log('routes ready ·', [LOCAL_API, JOIN_API, STATUS_API, ACTION_API].join(', '))
   })
 }

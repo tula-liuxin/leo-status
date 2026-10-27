@@ -6,8 +6,9 @@ DSH（DeepSeek Harness）插件：**Leo 状态看板**。把散落在各设备�
 
 - 从本机 Markdown 笔记（Obsidian）扫描 `- [ ]` / `- [x]` 任务，从 DSH 会话投影读取 AI 抽取的 todo；
 - Web UI 侧栏「待办」入口 → 整页看板：逾期 / 今天 / 未来 7 天 / 以后 / 无日期 / 已完成，支持搜索、来源筛选、隐藏已完成；
+- **行内操作**：本地 Markdown 来源的 todo 可以直接「作废 / 启用 / 删除」——作废是在笔记里给该行正文加 `~~删除线~~`（Obsidian 里可见，再次点击启用会去掉），删除是删掉源笔记的这一行（不可撤销，可用 Obsidian 文件恢复兜底）；DSH 会话与远端设备的 todo 只读；
 - **多设备**：任意设备装同一插件后，用中心地址 + 密码加入；本机作中心保存数据，看板合并所有设备的 todo，按设备区分（设备筛选、行上设备徽标、在线状态）；
-- 只读：不改笔记、不写 DSH 会话。
+- 只读扫描 + 显式写回：除你点击「作废/启用/删除」外不改任何笔记，也不写 DSH 会话。
 
 ## 架构
 
@@ -92,6 +93,7 @@ plugin_manager install_bundle target="github:tula-liuxin/leo-status"
 | `hub.js` | 中心：设备表/快照存储/合并 Board/HTTP API |
 | `sync.js` | 设备侧：join / push / fetchBoard |
 | `settings.js` | `<dataDir>/settings.json` 读写与默认值 |
+| `edit.js` | 行内写回：作废/启用/删除 Markdown 的一行（原子写、路径校验） |
 | `scan.js` | 纯数据层：Markdown + DSH 解析、聚合、统计 |
 | `client.js` | 浏览器半边：侧栏入口 + 整页看板（设备筛选/徽标/加入卡片） |
 | `test/*.test.mjs` | `node --test` 单测 |
@@ -106,8 +108,10 @@ node --check sync.js
 node --check settings.js
 node --check scan.js
 node --check client.js
+node --check edit.js
 node --test test/scan.test.mjs
 node --test test/hub.test.mjs
+node --test test/edit.test.mjs
 ```
 
-接口与数据形状见 [CONTRACT.md](CONTRACT.md)（v1）与 [CONTRACT-V2.md](CONTRACT-V2.md)（多设备）。
+接口与数据形状见 [CONTRACT.md](CONTRACT.md)（v1）、[CONTRACT-V2.md](CONTRACT-V2.md)（多设备）与 [CONTRACT-V3.md](CONTRACT-V3.md)（行内操作）。

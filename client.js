@@ -25,6 +25,8 @@ window.__ModuleLoader__.load({
     const API = '/leo-status/api/todos';
     /** Same-origin endpoint used by the "join hub" form. */
     const JOIN_API = '/leo-status/api/join';
+    /** Same-origin endpoint used by the inline todo actions (v3). */
+    const ACTION_API = '/leo-status/api/todos/action';
     /** Default hub URL offered in the join form. */
     const DEFAULT_HUB_URL = 'https://dsh.agencyarche.com/leo-status';
     /** Device id reserved for the local device in a v2 board. */
@@ -129,6 +131,13 @@ window.__ModuleLoader__.load({
       joinSubmit: '加入中心',
       joinSubmitting: '加入中…',
       joinFailed: '加入失败',
+      actionCancel: '作废',
+      actionRestore: '启用',
+      actionDelete: '删除',
+      actionDeleteConfirm: '再点一次确认删除',
+      actionFailed: '操作失败',
+      actionPending: '处理中…',
+      actionDismiss: '关闭',
     };
 
     const en = {
@@ -215,6 +224,13 @@ window.__ModuleLoader__.load({
       joinSubmit: 'Join hub',
       joinSubmitting: 'Joining…',
       joinFailed: 'Join failed',
+      actionCancel: 'Cancel',
+      actionRestore: 'Restore',
+      actionDelete: 'Delete',
+      actionDeleteConfirm: 'Click again to confirm deletion',
+      actionFailed: 'Action failed',
+      actionPending: 'Working…',
+      actionDismiss: 'Dismiss',
     };
 
     const CSS = `
@@ -309,6 +325,13 @@ window.__ModuleLoader__.load({
 .ls-badge{flex:none;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:18px;padding:0 6px;border-radius:var(--dsw-radius-xs);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
 .ls-badge--dsh{color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent)}
 .ls-device-badge{flex:none;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:18px;padding:0 6px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-xs);background:transparent;color:var(--dsw-alias-label-tertiary)}
+.ls-acts{display:inline-flex;align-items:center;gap:2px;flex:none}
+.ls-act{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;flex:none}
+.ls-act:hover:not(:disabled){color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
+.ls-act:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-act:disabled{opacity:.5;cursor:default}
+.ls-act--armed{color:var(--dsw-alias-state-error-primary)}
+.ls-act--armed:hover:not(:disabled){color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 12%,transparent)}
 .ls-empty{max-width:720px;margin:8px 0;padding:28px 20px;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.7;text-align:center}
 .ls-empty__title{margin:0 0 6px;font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary)}
 .ls-empty__body{margin:0}
@@ -332,6 +355,9 @@ window.__ModuleLoader__.load({
 .ls-banner__title{font-weight:600}
 .ls-banner__detail{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ls-banner__meta{font-size:11px;opacity:.85;white-space:nowrap}
+.ls-banner__close{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:999px;background:transparent;color:currentColor;font-size:14px;line-height:1;cursor:pointer;flex:none;opacity:.75}
+.ls-banner__close:hover{opacity:1;background:color-mix(in srgb,currentColor 12%,transparent)}
+.ls-banner__close:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
 .ls-join{margin-bottom:16px;padding:16px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)}
 .ls-join__title{margin:0 0 4px;font-size:15px;font-weight:600}
 .ls-join__intro{margin:0 0 12px;font-size:12px;color:var(--dsw-alias-label-secondary)}
@@ -825,7 +851,128 @@ window.__ModuleLoader__.load({
       });
     }
 
-    function TodoRow({ t, todo, todayDay, devices, showDevice, localDeviceId }) {
+    /** Inline cancel/restore/delete buttons; only rendered for local markdown todos (v3). */
+    function RowActions({ t, todo, pending, armed, onAction, onArmDelete }) {
+      const cancelled = todo.cancelled === true;
+      const primaryAction = cancelled ? 'restore' : 'cancel';
+      const primaryLabel = cancelled ? t('actionRestore') : t('actionCancel');
+      const primaryTitle = pending ? t('actionPending') : primaryLabel;
+      const deleteTitle = pending
+        ? t('actionPending')
+        : armed
+          ? t('actionDeleteConfirm')
+          : t('actionDelete');
+      const iconProps = {
+        width: 14,
+        height: 14,
+        viewBox: '0 0 16 16',
+        fill: 'none',
+        'aria-hidden': 'true',
+        focusable: 'false',
+      };
+      return h(
+        'span',
+        { className: 'ls-acts' },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ls-act',
+            title: primaryTitle,
+            'aria-label': primaryTitle,
+            disabled: pending,
+            onClick: () => onAction(primaryAction),
+          },
+          h(
+            'svg',
+            iconProps,
+            cancelled
+              ? [
+                  h('path', {
+                    key: 'arc',
+                    d: 'M3 8a5 5 0 1 0 1.5-3.55',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.4,
+                    strokeLinecap: 'round',
+                  }),
+                  h('path', {
+                    key: 'arrow',
+                    d: 'M2.8 2.4v3h3',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.4,
+                    strokeLinecap: 'round',
+                    strokeLinejoin: 'round',
+                  }),
+                ]
+              : [
+                  h('circle', {
+                    key: 'circle',
+                    cx: 8,
+                    cy: 8,
+                    r: 5.5,
+                    stroke: 'currentColor',
+                    strokeWidth: 1.4,
+                  }),
+                  h('path', {
+                    key: 'slash',
+                    d: 'M4.2 4.2l7.6 7.6',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.4,
+                    strokeLinecap: 'round',
+                  }),
+                ],
+          ),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ls-act ls-act--delete' + (armed ? ' ls-act--armed' : ''),
+            title: deleteTitle,
+            'aria-label': deleteTitle,
+            disabled: pending,
+            onClick: armed ? () => onAction('delete') : onArmDelete,
+          },
+          h(
+            'svg',
+            iconProps,
+            h('path', {
+              d: 'M3 4.5h10',
+              stroke: 'currentColor',
+              strokeWidth: 1.4,
+              strokeLinecap: 'round',
+            }),
+            h('path', {
+              d: 'M6.2 4.5V3.2h3.6v1.3',
+              stroke: 'currentColor',
+              strokeWidth: 1.3,
+              strokeLinecap: 'round',
+              strokeLinejoin: 'round',
+            }),
+            h('path', {
+              d: 'M4.6 4.6l.5 8h5.8l.5-8',
+              stroke: 'currentColor',
+              strokeWidth: 1.3,
+              strokeLinecap: 'round',
+              strokeLinejoin: 'round',
+            }),
+          ),
+        ),
+      );
+    }
+
+    function TodoRow({
+      t,
+      todo,
+      todayDay,
+      devices,
+      showDevice,
+      localDeviceId,
+      pendingTodoId,
+      armedDeleteId,
+      onTodoAction,
+      onTodoDeleteArm,
+    }) {
       const done = todo.done === true;
       const cancelled = todo.cancelled === true;
       const complete = done || cancelled;
@@ -838,6 +985,13 @@ window.__ModuleLoader__.load({
         : EMPTY;
       const badge = sourceBadge(todo, t);
       const deviceLabel = showDevice ? resolveDeviceLabel(todo, devices, t, localDeviceId) : '';
+      // Inline write actions only make sense for local markdown todos; DSH session todos
+      // and other devices' todos stay read-only.
+      const actionable =
+        todo.kind === 'markdown' &&
+        isLocalTodo(todo, localDeviceId) &&
+        typeof todo.id === 'string' &&
+        todo.id !== '';
       const tooltip =
         rowTooltip(todo, t) + (showDevice ? '\n' + t('device') + ': ' + deviceLabel : '');
       return h(
@@ -875,10 +1029,33 @@ window.__ModuleLoader__.load({
         showDevice
           ? h('span', { className: 'ls-device-badge', title: t('device') + ': ' + deviceLabel }, deviceLabel)
           : null,
+        actionable
+          ? h(RowActions, {
+              t,
+              todo,
+              pending: pendingTodoId === todo.id,
+              armed: armedDeleteId === todo.id,
+              onAction: (action) => onTodoAction(todo, action),
+              onArmDelete: () => onTodoDeleteArm(todo),
+            })
+          : null,
       );
     }
 
-    function TodoGroup({ t, group, doneExpanded, onToggleDone, todayDay, devices, showDevice, localDeviceId }) {
+    function TodoGroup({
+      t,
+      group,
+      doneExpanded,
+      onToggleDone,
+      todayDay,
+      devices,
+      showDevice,
+      localDeviceId,
+      pendingTodoId,
+      armedDeleteId,
+      onTodoAction,
+      onTodoDeleteArm,
+    }) {
       const isDone = group.id === 'done';
       const expanded = isDone ? doneExpanded : true;
       const count = group.rows.length;
@@ -941,6 +1118,10 @@ window.__ModuleLoader__.load({
                   devices,
                   showDevice,
                   localDeviceId,
+                  pendingTodoId,
+                  armedDeleteId,
+                  onTodoAction,
+                  onTodoDeleteArm,
                 }),
               ),
             )
@@ -1277,6 +1458,26 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Closable error banner shown directly below the toolbar after a failed row action. */
+    function ActionErrorBanner({ t, error, onClose }) {
+      return h(
+        'div',
+        { className: 'ls-banner', role: 'status' },
+        h('span', { className: 'ls-banner__text', title: error }, t('actionFailed') + ': ' + error),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'ls-banner__close',
+            title: t('actionDismiss'),
+            'aria-label': t('actionDismiss'),
+            onClick: onClose,
+          },
+          '\u00d7',
+        ),
+      );
+    }
+
     function StaleBanner({ t, error }) {
       return h(
         'div',
@@ -1570,6 +1771,21 @@ window.__ModuleLoader__.load({
       // The completed group is collapsed by default; "hide completed" removes it entirely.
       const [hideDone, setHideDone] = useState(false);
       const [doneExpanded, setDoneExpanded] = useState(false);
+      const [pendingTodoId, setPendingTodoId] = useState(null);
+      const [armedDeleteId, setArmedDeleteId] = useState(null);
+      const [actionError, setActionError] = useState(null);
+      const armedTimer = useRef(null);
+      const mounted = useRef(true);
+      useEffect(() => {
+        mounted.current = true;
+        return () => {
+          mounted.current = false;
+          if (armedTimer.current !== null) {
+            clearTimeout(armedTimer.current);
+            armedTimer.current = null;
+          }
+        };
+      }, []);
 
       const localDeviceId =
         snapshot !== null &&
@@ -1647,6 +1863,64 @@ window.__ModuleLoader__.load({
         setSelectedSources(EMPTY);
         setSelectedDevices(EMPTY);
       };
+
+      // -- inline todo actions (v3) ----------------------------------------------
+      const clearArmedDelete = () => {
+        if (armedTimer.current !== null) {
+          clearTimeout(armedTimer.current);
+          armedTimer.current = null;
+        }
+        setArmedDeleteId(null);
+      };
+      const armDelete = (todo) => {
+        if (todo === null || typeof todo !== 'object') return;
+        if (armedTimer.current !== null) clearTimeout(armedTimer.current);
+        setArmedDeleteId(todo.id);
+        armedTimer.current = setTimeout(() => {
+          armedTimer.current = null;
+          setArmedDeleteId(null);
+        }, 3000);
+      };
+      const runTodoAction = async (todo, action) => {
+        if (pendingTodoId !== null) return;
+        if (todo === null || typeof todo !== 'object' || typeof todo.id !== 'string' || todo.id === '') return;
+        clearArmedDelete();
+        setPendingTodoId(todo.id);
+        setActionError(null);
+        try {
+          const response = await fetch(ACTION_API, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { accept: 'application/json', 'content-type': 'application/json' },
+            body: JSON.stringify({ action, id: todo.id }),
+          });
+          let body = null;
+          try {
+            body = await response.json();
+          } catch {
+            body = null;
+          }
+          if (!response.ok || body === null || typeof body !== 'object' || body.ok !== true) {
+            const message =
+              body !== null && typeof body === 'object' && typeof body.error === 'string' && body.error !== ''
+                ? body.error
+                : response.ok
+                  ? t('actionFailed')
+                  : 'HTTP ' + response.status;
+            throw new Error(message);
+          }
+          if (!mounted.current) return;
+          setPendingTodoId(null);
+          setActionError(null);
+          if (body.board !== null && typeof body.board === 'object') applyBoard(body.board);
+          else refresh();
+        } catch (actionFailure) {
+          if (!mounted.current) return;
+          setPendingTodoId(null);
+          setActionError(describeError(actionFailure));
+        }
+      };
+
       let body;
       if (snapshot === null) {
         body = pending ? h(LoadingBlock, { t }) : h(OfflineBlock, { t, error, onRetry: retry });
@@ -1683,6 +1957,13 @@ window.__ModuleLoader__.load({
             onToggleDevice: toggleDevice,
             onClearDevices: clearDevices,
           }),
+          actionError !== null
+            ? h(ActionErrorBanner, {
+                t,
+                error: actionError,
+                onClose: () => setActionError(null),
+              })
+            : null,
           error !== null ? h(ErrorBanner, { t, error, onRetry: refresh }) : null,
           todos.length === 0
             ? h(EmptyBlock, { t })
@@ -1702,6 +1983,10 @@ window.__ModuleLoader__.load({
                       devices: boardDevices,
                       showDevice: multiDevice,
                       localDeviceId,
+                      pendingTodoId,
+                      armedDeleteId,
+                      onTodoAction: runTodoAction,
+                      onTodoDeleteArm: armDelete,
                     }),
                   ),
                 ),
