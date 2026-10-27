@@ -519,6 +519,8 @@ window.__ModuleLoader__.load({
           lastSeen: typeof device.lastSeen === 'string' && device.lastSeen !== '' ? device.lastSeen : null,
         };
       });
+      // The local device is always the first chip; keep the board order for the rest.
+      options.sort((left, right) => (left.local === right.local ? 0 : left.local ? -1 : 1));
       const counts = new Map(options.map((option) => [option.key, 0]));
       for (const todo of todos) {
         if (todo === null || typeof todo !== 'object' || todo.done === true || todo.cancelled === true) continue;
