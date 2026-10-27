@@ -1,6 +1,6 @@
 {
   "name": "leo-status",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "private": true,
   "type": "module",
   "description": "Leo 状态看板：自动发现 Obsidian/DSH 会话 TODO，多设备加入中心与简单密码认证；新增管家「阿源」——会话建议需 accept、对话记忆、红点提醒。",

@@ -15,7 +15,7 @@
  */
 import os from 'node:os'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { promises as fsp } from 'node:fs'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
@@ -39,7 +39,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.4.4'
+export const PLUGIN_VERSION = '0.4.5'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -131,9 +131,32 @@ export function apply(ctx, config) {
    * 所以插件在 index HTML 里注入一个每次启动随机生成的 token，页面 fetch 时带上它；
    * cookie 鉴权仍保留为回退（两者任一通过即可）。
    */
-  const pageToken = randomBytes(24).toString('hex')
+  let pageToken = randomBytes(24).toString('hex')
   const PAGE_TOKEN_HEADER = 'x-leo-status-token'
-
+  /**
+   * 页面 token 必须跨插件重载保持稳定：设备中心（dsh.agencyarche.com）打开的页面
+   * 不会在每次插件热重载时重新取 index，旧的随机 token 会让远程待办页 401。
+   * 这里用同步读写，保证 apply 一开始 token 就是稳定的（不给首屏留竞态）。
+   */
+  function ensureStablePageTokenSync() {
+    const file = path.join(dataDir, 'page-token')
+    try {
+      const saved = readFileSync(file, 'utf8').trim()
+      if (/^[0-9a-f]{32,128}$/i.test(saved)) {
+        pageToken = saved
+        return
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') log('page token read failed:', describeError(error))
+    }
+    try {
+      mkdirSync(dataDir, { recursive: true })
+      writeFileSync(file, pageToken, { mode: 0o600 })
+    } catch (error) {
+      log('page token write failed:', describeError(error))
+    }
+  }
+  ensureStablePageTokenSync()
   /** @type {ReturnType<typeof defaultSettings>} */
   let settings = defaultSettings()
   let settingsError = null

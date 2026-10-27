@@ -5,6 +5,7 @@
 > **v0.4.2 修订**：数据源卡折叠进「数据源」tab（待办 tab 默认，数据源首次进入才请求）；阿源多轮对话历史改放 system 文本，messages 只发 request-only 的本次 user 消息（宿主不接受无 durable id/source 的 assistant 历史，表现为 1ms 内 fallback「模型暂时不可用」）。
 > **v0.4.3 修订**：阿源改由真实 DSH Agent 会话驱动（默认 preset 全部工具 + `danger-full-access` 沙箱 + `never` 审批，与用户权限一致）；面板渲染 tool 卡（名/参数/结果/错误）；chat 响应新增 `tools`/`usedAgent`，state 新增 `agent{enabled,ready,sessionId,error}`；hub 增加密码保护的 `POST /api/yuan/chat`。
 > **v0.4.4 修订**：阿源面板增加「原生会话」按钮：`state.agent.ready && sessionId` 时调用宿主 `uiWorkspace.openSession(sessionId)`，用 DSH 原生会话 UI 打开同一个 agent（可选 `workspaces.insertSessionBefore` 保证侧栏可见）。
+> **v0.4.5 修订**：页面 token 持久化到 `<dataDir>/page-token`（同步读取，插件重载不变）；修复设备中心打开的页面在插件重载后请求 `/leo-status/api/*` 得到 401 的问题。远程页面刷新一次即可拿到稳定 token。
 > 本版本目标（用户原话）：「让这些 todo 的导入更自然、准确」；Obsidian 自动发现；会话 todo 只收「收尾型 / 高相关且大概率乐意做」的，且**必须点 accept**；新增全局管家 agent「阿源」：composer 左下 icon + 展开对话、记忆、红点分类信号（todo 建议 / 事项提醒 / 关键 deadline）。
 
 ## 0. 一句话架构
