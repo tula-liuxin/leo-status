@@ -1,7 +1,8 @@
 # leo-status v0.4.0 契约：自然导入 + 阿源
 
 > 状态：实现中（2026-10-27）。前序契约见 `CONTRACT.md`(v1) / `CONTRACT-V2.md`(多设备) / `CONTRACT-V3.md`(行内操作)。
-> **v0.4.1 修订**：DSH 会话 todo 不再直接进看板（只作为阿源建议，accept 后才以 `kind:'suggestion'` 出现）；子代理/队友会话（title 命中 `teammate|subagent|研究队友|^you are a`）整会话不进建议箱；升级时一次性 dismiss 旧的 `source:'session'` pending 建议（tombstone，不复活）；阿源聊天区升级为自绘 Markdown 对话（头像/时间/模型徽标/代码块/快捷问题/失败重试/记忆确认）。
+> **v0.4.1 修订**：DSH 会话 todo 不再直接进看板（只作为阿源建议，accept 后才以 `kind:'suggestion'` 出现）；子代理/队友会话（title 命中 `teammate|subagent|研究队友|^you are a`）整会话不进建议箱；升级时一次性移除旧的 `source:'session'` 建议（tombstone，不复活）；阿源聊天区升级为自绘 Markdown 对话（头像/时间/模型徽标/代码块/快捷问题/失败重试/记忆确认）。
+> **v0.4.2 修订**：数据源卡折叠进「数据源」tab（待办 tab 默认，数据源首次进入才请求）；阿源多轮对话历史改放 system 文本，messages 只发 request-only 的本次 user 消息（宿主不接受无 durable id/source 的 assistant 历史，表现为 1ms 内 fallback「模型暂时不可用」）。
 > 本版本目标（用户原话）：「让这些 todo 的导入更自然、准确」；Obsidian 自动发现；会话 todo 只收「收尾型 / 高相关且大概率乐意做」的，且**必须点 accept**；新增全局管家 agent「阿源」：composer 左下 icon + 展开对话、记忆、红点分类信号（todo 建议 / 事项提醒 / 关键 deadline）。
 
 ## 0. 一句话架构
@@ -301,7 +302,7 @@ export function createYuanService({ dataDir, log, llm, getModel, config })
     7. composer：单行输入 + 发送按钮；Enter 发送，Shift+Enter 换行；空文本禁用。
   - 所有文案走 locale（新增 zh/en 各 ≥45 key）；无硬编码中文（图标「源」除外）。
 - 看板页 `DashboardPage` 顶部增加「阿源建议」卡（同 store）：显示 pending 数、前 3 条、接受/忽略、打开面板按钮（打开后滚到 composer 的 dock）。
-- 看板页增加「数据源 · Obsidian 自动发现」卡：检测到的 vault（接入）、已接入 roots（移除）、规则开关（autoDetect/tagLines/markers/frontmatter/frontmatterList）、重新扫描。数据来自 `GET /obsidian/vaults`、`GET /settings`、`POST /settings`。
+- 看板页增加「数据源 · Obsidian 自动发现」tab（0.4.2 起折叠）：*待办* tab 默认显示列表/筛选；*数据源* tab 才显示检测到的 vault（接入）、已接入 roots（移除）、规则开关（autoDetect/tagLines/markers/frontmatter/frontmatterList）、重新扫描；数据源卡首次进入该 tab 才挂载/请求。数据来自 `GET /obsidian/vaults`、`GET /settings`、`POST /settings`。
 
 ### 6.2 store（module 级）
 

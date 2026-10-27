@@ -1583,6 +1583,10 @@ window.__ModuleLoader__.load({
       obsidianRetry: '重试',
       obsidianNotes: '条笔记',
       obsidianSaved: '已保存',
+      tabTodos: '待办',
+      tabSources: '数据源',
+      tabAria: '看板视图切换',
+      sourcesSummary: '数据源与自动识别设置',
     };
 
     const en = {
@@ -1771,6 +1775,10 @@ window.__ModuleLoader__.load({
       obsidianRetry: 'Retry',
       obsidianNotes: 'notes',
       obsidianSaved: 'Saved',
+      tabTodos: 'Todos',
+      tabSources: 'Data sources',
+      tabAria: 'Board view tabs',
+      sourcesSummary: 'Data sources and auto-detect settings',
     };
 
     const CSS = `
@@ -2031,6 +2039,12 @@ window.__ModuleLoader__.load({
 .ls-obs-btn--primary{border-color:transparent;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
 .ls-obs-btn--primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);opacity:.9}
 @media (max-width:720px){.ls-obs-rules{grid-template-columns:1fr}}
+.ls-tabs{display:inline-flex;align-items:center;align-self:flex-start;gap:2px;margin-bottom:14px;padding:3px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)}
+.ls-tab{font:inherit;font-size:12px;line-height:24px;padding:0 14px;border:none;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}
+.ls-tab:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-tab--active{color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);font-weight:600}
+.ls-tab:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-tabpanel--hidden{display:none}
 .ls-yuan-msgrow{display:flex;align-items:flex-start;gap:8px;max-width:100%}
 .ls-yuan-msgrow--user{justify-content:flex-end}
 .ls-yuan-avatar{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,transparent);color:var(--dsw-alias-brand-primary);font-size:11px;font-weight:600;flex:none;margin-top:2px}
@@ -3950,6 +3964,8 @@ window.__ModuleLoader__.load({
       // The completed group is collapsed by default; "hide completed" removes it entirely.
       const [hideDone, setHideDone] = useState(false);
       const [doneExpanded, setDoneExpanded] = useState(false);
+      const [activeTab, setActiveTab] = useState('todos');
+      const [sourcesVisited, setSourcesVisited] = useState(false);
       const [pendingTodoId, setPendingTodoId] = useState(null);
       const [armedDeleteId, setArmedDeleteId] = useState(null);
       const [actionError, setActionError] = useState(null);
@@ -4061,6 +4077,10 @@ window.__ModuleLoader__.load({
         setSelectedSources(EMPTY);
         setSelectedDevices(EMPTY);
       };
+      const switchTab = (tab) => {
+        setActiveTab(tab);
+        if (tab === 'sources') setSourcesVisited(true);
+      };
       const acceptYuanSuggestion = (id) => {
         yuanStore.acceptSuggestion(id);
       };
@@ -4157,55 +4177,100 @@ window.__ModuleLoader__.load({
           hubOffline ? h(HubOfflineBanner, { t, hub }) : null,
           stale !== null ? h(StaleBanner, { t, error: stale }) : null,
           h(StatsBar, { t, stats, completed }),
-          h(ObsidianSourceCard, { t, applyBoard }),
-          h(Toolbar, {
-            t,
-            query,
-            onQueryChange: changeQuery,
-            sources,
-            selectedSources,
-            onToggleSource: toggleSource,
-            onClearSources: clearSources,
-            hideDone,
-            onToggleHideDone: () => setHideDone((value) => !value),
-            devices: deviceOptions,
-            selectedDevices,
-            onToggleDevice: toggleDevice,
-            onClearDevices: clearDevices,
-          }),
-          actionError !== null
-            ? h(ActionErrorBanner, {
-                t,
-                error: actionError,
-                onClose: () => setActionError(null),
-              })
-            : null,
-          error !== null ? h(ErrorBanner, { t, error, onRetry: refresh }) : null,
-          todos.length === 0
-            ? h(EmptyBlock, { t })
-            : shownGroups.length === 0
-              ? h(FilteredEmpty, { t, onClear: clearFilters })
-              : h(
-                  'div',
-                  { className: 'ls-groups' },
-                  shownGroups.map((group) =>
-                    h(TodoGroup, {
-                      key: group.id,
+          h(
+            'div',
+            { className: 'ls-tabs', role: 'tablist', 'aria-label': t('tabAria') },
+            h(
+              'button',
+              {
+                type: 'button',
+                role: 'tab',
+                className: 'ls-tab' + (activeTab === 'todos' ? ' ls-tab--active' : ''),
+                'aria-selected': activeTab === 'todos' ? 'true' : 'false',
+                title: t('tabTodos'),
+                onClick: () => switchTab('todos'),
+              },
+              t('tabTodos'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                role: 'tab',
+                className: 'ls-tab' + (activeTab === 'sources' ? ' ls-tab--active' : ''),
+                'aria-selected': activeTab === 'sources' ? 'true' : 'false',
+                title: t('tabSources'),
+                onClick: () => switchTab('sources'),
+              },
+              t('tabSources'),
+            ),
+          ),
+          activeTab === 'todos'
+            ? h(
+                'div',
+                { className: 'ls-tabpanel', role: 'tabpanel', 'aria-label': t('tabTodos') },
+                h(Toolbar, {
+                  t,
+                  query,
+                  onQueryChange: changeQuery,
+                  sources,
+                  selectedSources,
+                  onToggleSource: toggleSource,
+                  onClearSources: clearSources,
+                  hideDone,
+                  onToggleHideDone: () => setHideDone((value) => !value),
+                  devices: deviceOptions,
+                  selectedDevices,
+                  onToggleDevice: toggleDevice,
+                  onClearDevices: clearDevices,
+                }),
+                actionError !== null
+                  ? h(ActionErrorBanner, {
                       t,
-                      group,
-                      doneExpanded,
-                      onToggleDone: () => setDoneExpanded((value) => !value),
-                      todayDay,
-                      devices: boardDevices,
-                      showDevice: multiDevice,
-                      localDeviceId,
-                      pendingTodoId,
-                      armedDeleteId,
-                      onTodoAction: runTodoAction,
-                      onTodoDeleteArm: armDelete,
-                    }),
-                  ),
-                ),
+                      error: actionError,
+                      onClose: () => setActionError(null),
+                    })
+                  : null,
+                error !== null ? h(ErrorBanner, { t, error, onRetry: refresh }) : null,
+                todos.length === 0
+                  ? h(EmptyBlock, { t })
+                  : shownGroups.length === 0
+                    ? h(FilteredEmpty, { t, onClear: clearFilters })
+                    : h(
+                        'div',
+                        { className: 'ls-groups' },
+                        shownGroups.map((group) =>
+                          h(TodoGroup, {
+                            key: group.id,
+                            t,
+                            group,
+                            doneExpanded,
+                            onToggleDone: () => setDoneExpanded((value) => !value),
+                            todayDay,
+                            devices: boardDevices,
+                            showDevice: multiDevice,
+                            localDeviceId,
+                            pendingTodoId,
+                            armedDeleteId,
+                            onTodoAction: runTodoAction,
+                            onTodoDeleteArm: armDelete,
+                          }),
+                        ),
+                      ),
+              )
+            : null,
+          sourcesVisited
+            ? h(
+                'div',
+                {
+                  className: 'ls-tabpanel' + (activeTab === 'sources' ? '' : ' ls-tabpanel--hidden'),
+                  role: 'tabpanel',
+                  'aria-label': t('sourcesSummary'),
+                  'aria-hidden': activeTab === 'sources' ? 'false' : 'true',
+                },
+                h(ObsidianSourceCard, { t, applyBoard }),
+              )
+            : null,
           h(PageFooter, { t, snapshot }),
         );
       }

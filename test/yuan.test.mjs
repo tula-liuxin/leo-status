@@ -116,8 +116,13 @@ test('buildYuanPrompt：包含看板/建议/提醒/记忆与历史', () => {
   assert.ok(prompt.system.includes('交报告'))
   assert.ok(prompt.system.includes('未完成'))
   assert.ok(prompt.system.includes('<<TODO'))
-  assert.equal(prompt.messages.length, 3)
-  assert.equal(prompt.messages[2].content[0].text, '今天做什么')
+  // assistant 历史没有 durable id/source，不能进 messages；只发本次 user。
+  assert.ok(prompt.system.includes('最近对话'))
+  assert.ok(prompt.system.includes('Leo：早'))
+  assert.ok(prompt.system.includes('阿源：早，今天有 2 条到期'))
+  assert.equal(prompt.messages.length, 1)
+  assert.equal(prompt.messages[0].role, 'user')
+  assert.equal(prompt.messages[0].content[0].text, '今天做什么')
 })
 
 test('parseYuanMarkers：TODO/MEMORY/REMINDER 提取与正文清理', () => {

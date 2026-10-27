@@ -485,6 +485,14 @@ function memorySummary(memory, limit) {
  */
 export function buildYuanPrompt({ board = null, suggestions = [], memory = [], reminders = [], chat = [], now = Date.now(), maxHistory = 30, maxMemory = 40, message = '' } = {}) {
   const date = now instanceof Date ? now : new Date(now)
+  const history = (Array.isArray(chat) ? chat : []).slice(-Math.max(0, Math.min(80, Number(maxHistory) || 30)))
+  const historyLines = []
+  for (const entry of history) {
+    const text = normalizeText(entry?.text)
+    if (text === '') continue
+    if (entry.role !== 'assistant' && entry.role !== 'user') continue
+    historyLines.push(`${entry.role === 'assistant' ? '阿源' : 'Leo'}：${text}`)
+  }
   const system = [
     '你是「阿源」，Leo 的全局 todo 管家与第二大脑。',
     '你熟悉看板上的所有来源：Obsidian 笔记、DSH 会话、各设备。',
@@ -512,18 +520,19 @@ export function buildYuanPrompt({ board = null, suggestions = [], memory = [], r
     '',
     '长期记忆：',
     memorySummary(memory, Math.max(1, Math.min(80, Number(maxMemory) || 40))),
+    '',
+    '【最近对话】',
+    historyLines.length === 0 ? '（无）' : historyLines.join('\n'),
   ].join('\n')
 
+  // 只发 request-only 的 user 消息：assistant 历史没有 durable id/source，
+  // 直接塞进 messages 会被 provider 校验拒绝（表现为「模型暂时不可用」）。
+  // 历史对话放进 system 文本，消息列表只保留本次用户输入。
   const messages = []
-  const history = (Array.isArray(chat) ? chat : []).slice(-Math.max(0, Math.min(80, Number(maxHistory) || 30)))
-  for (const entry of history) {
-    const text = normalizeText(entry?.text)
-    if (text === '') continue
-    if (entry.role !== 'assistant' && entry.role !== 'user') continue
-    messages.push({ role: entry.role, content: [{ type: 'text', text }] })
-  }
   const pending = normalizeText(message)
-  if (pending !== '') messages.push({ role: 'user', content: [{ type: 'text', text: pending }] })
+  if (pending !== '') {
+    messages.push({ role: 'user', content: [{ type: 'text', text: pending }] })
+  }
   return { system, messages }
 }
 
@@ -588,6 +597,7 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
     memory: [],
     reminders: [],
     lastSeenAt: 0,
+    lastError: null,
   }
   let loadPromise = null
   let chatQueue = Promise.resolve()
@@ -674,6 +684,22 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
     return state.chat.slice(-Math.max(1, Math.min(200, limit)))
   }
 
+  /** 记录最近一次模型失败（内存 + <dataDir>/yuan/last-error.json），方便诊断。 */
+  async function recordModelError(error) {
+    const failure = error !== null && typeof error === 'object' ? error : {}
+    state.lastError = {
+      message: normalizeText(failure.message ?? String(error)),
+      code: typeof failure.code === 'string' ? failure.code : null,
+      status: Number.isFinite(failure.status) ? failure.status : null,
+      at: nowIso(),
+    }
+    try {
+      await writeJsonAtomic(path.join(dataDir, 'yuan', 'last-error.json'), state.lastError)
+    } catch (writeError) {
+      log('yuan: write last-error failed:', writeError?.message ?? writeError)
+    }
+  }
+
   async function chat(message, { board = null, suggestions = [] } = {}) {
     await ensureLoaded()
     const run = async () => {
@@ -715,6 +741,7 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
           rawReply = await streamReply({ system: prompt.system, messages: prompt.messages, model })
         } catch (error) {
           log('yuan: model call failed:', error?.message ?? error)
+          await recordModelError(error)
           rawReply = ''
         }
       }
@@ -723,6 +750,7 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
         reply = fallbackReply({ board, suggestions, reminders: state.reminders, now: Date.now() })
         rawReply = reply
       } else {
+        state.lastError = null
         const parsed = parseYuanMarkers(rawReply)
         reply = parsed.text === '' ? '我在。' : parsed.text
         for (const text of parsed.memories) {
@@ -790,7 +818,7 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
       memory: state.memory.slice(-80),
       reminders: state.reminders,
       lastSeenAt: state.lastSeenAt,
-      model: { provider: model.provider, model: model.model, available: modelAvailable(model) },
+      model: { provider: model.provider, model: model.model, available: modelAvailable(model), lastError: state.lastError },
     }
   }
 
