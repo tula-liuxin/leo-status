@@ -135,6 +135,53 @@ test('parseYuanMarkers：TODO/MEMORY/REMINDER 提取与正文清理', () => {
   assert.equal(new Date(parsed.reminders[0].at).getTime(), Date.parse('2026-10-28T09:00:00+08:00'))
 })
 
+test('agentChat：优先走真实 agent，工具卡随消息持久化', async () => {
+  const dir = await tempDir()
+  const calls = []
+  const service = createYuanService({
+    dataDir: dir,
+    llm: null,
+    agentChat: async (text, context) => {
+      calls.push({ text, hasContext: typeof context?.contextText === 'string' && context.contextText.includes('看板') })
+      return {
+        reply: '我看了 安排.md，今天先做这三件。<<TODO 给周报补数据>>',
+        tools: [{ kind: 'tool', id: 'call-1', name: 'read_file', arguments: '{"path":"安排.md"}', result: '- [ ] 给周报补数据' }],
+      }
+    },
+    config: { yuan: { name: '阿源' } },
+  })
+  const result = await service.chat('看一下安排', { board: boardFixture(), suggestions: [] })
+  assert.equal(result.usedAgent, true)
+  assert.equal(result.tools.length, 1)
+  assert.ok(result.reply.includes('安排.md'))
+  assert.equal(result.proposals.length, 1)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].text, '看一下安排')
+  assert.equal(calls[0].hasContext, true)
+  const chat = await service.store.loadChat(10)
+  const assistant = chat[chat.length - 1]
+  assert.equal(assistant.tools.length, 1)
+  assert.equal(assistant.tools[0].name, 'read_file')
+  assert.equal(assistant.tools[0].result, '- [ ] 给周报补数据')
+  assert.deepEqual(assistant.proposals, ['给周报补数据'])
+})
+
+test('agentChat 抛错时退回直接模型/fallback，不挂', async () => {
+  const dir = await tempDir()
+  const service = createYuanService({
+    dataDir: dir,
+    llm: null,
+    agentChat: async () => {
+      throw new Error('agent unavailable')
+    },
+    config: { yuan: { name: '阿源' } },
+  })
+  const result = await service.chat('今天做什么', { board: boardFixture(), suggestions: [] })
+  assert.equal(result.usedAgent, false)
+  assert.ok(result.reply.includes('看板'))
+  assert.equal(result.tools.length, 0)
+})
+
 test('chat：无 LLM 时走 fallback，仍持久化并返回建议', async () => {
   const dir = await tempDir()
   const service = createYuanService({

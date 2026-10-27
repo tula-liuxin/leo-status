@@ -164,6 +164,19 @@ export function createYuanStore(dataDir) {
       if (Array.isArray(entry?.proposals) && entry.proposals.length > 0) {
         value.proposals = entry.proposals.map((item) => normalizeText(item)).filter((item) => item !== '')
       }
+      if (Array.isArray(entry?.tools) && entry.tools.length > 0) {
+        value.tools = entry.tools
+          .filter((tool) => tool !== null && typeof tool === 'object' && typeof tool.name === 'string')
+          .slice(0, 20)
+          .map((tool) => ({
+            kind: 'tool',
+            id: typeof tool.id === 'string' ? tool.id : '',
+            name: tool.name,
+            arguments: typeof tool.arguments === 'string' ? tool.arguments.slice(0, 2000) : '',
+            ...(typeof tool.result === 'string' ? { result: tool.result.slice(0, 2000) } : {}),
+            ...(tool.isError === true ? { isError: true } : {}),
+          }))
+      }
       if (entry?.fallback === true) value.fallback = true
       await appendJsonl(files.chat, value)
       return value
@@ -480,6 +493,23 @@ function memorySummary(memory, limit) {
   return list.map((item) => `- ${normalizeText(item.text).slice(0, 120)}`).join('\n')
 }
 
+/** 阿源 agent 会话每轮注入的动态上下文（看板/建议/提醒/记忆）。 */
+function buildAgentContext({ board, suggestions, memory, reminders, now = Date.now() }) {
+  return [
+    '【当前看板】',
+    boardSummary(board, now),
+    '',
+    '【待确认建议】',
+    suggestionSummary(suggestions),
+    '',
+    '【提醒】',
+    reminderSummary(reminders, now),
+    '',
+    '【长期记忆】',
+    memorySummary(memory, 40),
+  ].join('\n')
+}
+
 /**
  * 构建系统提示 + 对话消息。返回的 messages 只含历史与本次 user 消息。
  */
@@ -589,7 +619,7 @@ function fallbackReply({ board, suggestions, reminders, now = Date.now() }) {
 /**
  * 阿源服务。llm/getModel 由 index.js 注入（宿主 ctx.llm / agentDefaultModel）。
  */
-export function createYuanService({ dataDir, log = () => {}, llm = null, getModel = null, config = {} } = {}) {
+export function createYuanService({ dataDir, log = () => {}, llm = null, getModel = null, agentChat = null, config = {} } = {}) {
   const store = createYuanStore(dataDir)
   const state = {
     loaded: false,
@@ -726,7 +756,32 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
       let reply = ''
       let rawReply = ''
       let usedFallback = false
-      if (modelAvailable(model)) {
+      let tools = []
+      let usedAgent = false
+
+      // 首选项：真实的 DSH Agent 会话（完整工具 + 与用户相同权限）。
+      if (typeof agentChat === 'function') {
+        try {
+          const agentResult = await agentChat(raw, {
+            contextText: buildAgentContext({ board, suggestions, memory: state.memory, reminders: state.reminders }),
+          })
+          if (agentResult !== null && typeof agentResult === 'object' && typeof agentResult.reply === 'string' && agentResult.reply.trim() !== '') {
+            rawReply = agentResult.reply
+            tools = Array.isArray(agentResult.tools) ? agentResult.tools : []
+            usedAgent = true
+          } else if (agentResult !== null && typeof agentResult === 'object' && Array.isArray(agentResult.tools) && agentResult.tools.length > 0) {
+            // 只调了工具、没有文字：给一个收尾，不要回退成 direct model 重跑一遍。
+            rawReply = '（工具执行完成）'
+            tools = agentResult.tools
+            usedAgent = true
+          }
+        } catch (error) {
+          log('yuan: agent chat failed, falling back to direct model:', error?.message ?? error)
+          await recordModelError(error)
+        }
+      }
+
+      if (rawReply === '' && modelAvailable(model)) {
         const prompt = buildYuanPrompt({
           board,
           suggestions,
@@ -770,6 +825,7 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
             role: 'assistant',
             text: reply,
             proposals: parsed.todos,
+            ...(tools.length > 0 ? { tools } : {}),
             ...(usedFallback ? { fallback: true } : {}),
           })
           state.chat.push(assistant)
@@ -778,6 +834,8 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
             chat: recentChat(30),
             proposals: parsed.todos.map((text) => ({ text, source: 'yuan' })),
             memory: state.memory,
+            tools,
+            usedAgent,
             signals: null,
           }
         }
@@ -785,10 +843,11 @@ export function createYuanService({ dataDir, log = () => {}, llm = null, getMode
       const assistant = await store.appendChat({
         role: 'assistant',
         text: reply,
+        ...(tools.length > 0 ? { tools } : {}),
         ...(usedFallback ? { fallback: true } : {}),
       })
       state.chat.push(assistant)
-      return { reply, chat: recentChat(30), proposals: [], memory: state.memory, signals: null }
+      return { reply, chat: recentChat(30), proposals: [], memory: state.memory, tools, usedAgent, signals: null }
     }
     const next = chatQueue.then(run, run)
     chatQueue = next.then(

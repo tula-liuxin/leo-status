@@ -25,6 +25,7 @@ import { joinHub, pushSnapshot, fetchBoard, platformId, normalizeHubUrl } from '
 import { applyTodoAction, EditError } from './edit.js'
 import { createSuggestionStore, deriveSuggestions } from './suggest.js'
 import { createYuanService } from './yuan.js'
+import { createYuanAgentRuntime } from './yuan-agent.js'
 import {
   resolveDataDir,
   loadSettings,
@@ -38,7 +39,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.4.2'
+export const PLUGIN_VERSION = '0.4.3'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -217,6 +218,7 @@ export function apply(ctx, config) {
   /** 建议箱（suggest.js）与阿源（yuan.js）都懒初始化；启动完成后可用。 */
   let suggestionStore = null
   let yuanService = null
+  let yuanAgent = null
   let llm = null
   let agentDefaultModel = null
 
@@ -256,11 +258,20 @@ export function apply(ctx, config) {
     try {
       suggestionStore = createSuggestionStore(dataDir)
       await suggestionStore.load()
+      // 阿源的完整能力：真实 DSH Agent 会话（工具 + 与用户相同的最高权限）。
+      // 失败时 yuanService 会退回直接模型调用，面板不会挂。
+      try {
+        yuanAgent = createYuanAgentRuntime({ ctx, dataDir, log, getModel: yuanGetModel })
+      } catch (error) {
+        yuanAgent = null
+        log('yuan-agent init failed:', describeError(error))
+      }
       yuanService = createYuanService({
         dataDir,
         log,
         llm: llmBridge,
         getModel: yuanGetModel,
+        agentChat: yuanAgent !== null ? (text, options) => yuanAgent.chat(text, options) : null,
         config: settings,
       })
       await yuanService.ensureLoaded()
@@ -581,6 +592,11 @@ export function apply(ctx, config) {
         password,
         store,
         boardProvider: () => hubBoard(true),
+        yuanChat: async (message) => {
+          const board = await hubBoard(true).catch(() => null)
+          const suggestions = Array.isArray(board?.suggestions) ? board.suggestions : []
+          return yuanService !== null ? yuanService.chat(message, { board, suggestions }) : { reply: '', tools: [], usedAgent: false }
+        },
         syncIntervalMs: settings.syncIntervalMs,
         log,
       })
@@ -1029,6 +1045,10 @@ export function apply(ctx, config) {
     log(`mode=${settings.mode}`, `dataDir=${dataDir}`)
     await initV042()
     await migrateStaleSessionSuggestions()
+    // 预热阿源的真实 Agent 会话（失败会写 yuan/agent-error.json，面板仍可用直接模型降级）。
+    if (yuanAgent !== null) {
+      yuanAgent.ensure().catch((error) => log('yuan-agent warm failed:', describeError(error)))
+    }
     if (isHub()) {
       await ensureHub()
     } else if (isDevice()) {
@@ -1049,6 +1069,11 @@ export function apply(ctx, config) {
     return () => {
       stopSyncTimer()
       stopHub()
+      try {
+        yuanAgent?.dispose?.()
+      } catch {
+        /* ignore */
+      }
     }
   }, 'leo-status: runtime')
 
@@ -1152,7 +1177,16 @@ export function apply(ctx, config) {
         }
       }
       const payload = await yuanService.statePayload({ board, suggestions, chatLimit: 30 })
-      return { ok: true, ...payload, suggestions }
+      let agentStatus = { enabled: yuanAgent !== null, ready: false, sessionId: null, error: null }
+      if (yuanAgent !== null) {
+        try {
+          await yuanAgent.ensure()
+          agentStatus = { enabled: true, ready: true, sessionId: yuanAgent.sessionId, error: null }
+        } catch (error) {
+          agentStatus = { enabled: true, ready: false, sessionId: null, error: describeError(error) }
+        }
+      }
+      return { ok: true, ...payload, suggestions, agent: agentStatus }
     }
 
     async function yuanSignals() {
@@ -1162,7 +1196,7 @@ export function apply(ctx, config) {
         return { ok: true, signals: [], badge: { total: 0, urgent: 0, kinds: {}, hasUnread: false }, unread: false, pending: suggestions.length }
       }
       const payload = await yuanService.statePayload({ board, suggestions, chatLimit: 0 })
-      return { ok: true, signals: payload.signals, badge: payload.badge, unread: payload.unread, pending: suggestions.length }
+      return { ok: true, signals: payload.signals, badge: payload.badge, unread: payload.unread, pending: suggestions.length, agent: { enabled: yuanAgent !== null, sessionId: yuanAgent?.sessionId ?? null } }
     }
 
     async function yuanChat(body) {
@@ -1207,6 +1241,8 @@ export function apply(ctx, config) {
         reply: result.reply,
         chat: result.chat,
         proposals: result.proposals,
+        tools: Array.isArray(result.tools) ? result.tools : [],
+        usedAgent: result.usedAgent === true,
         suggestions: Array.isArray(fresh?.suggestions) ? fresh.suggestions : pendingSuggestions(),
         signals: fresh?.yuan?.signals ?? [],
         badge: fresh?.yuan?.badge ?? { total: 0, urgent: 0, kinds: {}, hasUnread: false },

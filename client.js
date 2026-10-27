@@ -166,6 +166,7 @@ window.__ModuleLoader__.load({
         memory: Array.isArray(source.memory) ? source.memory : [],
         reminders: Array.isArray(source.reminders) ? source.reminders : [],
         model: source.model !== undefined ? source.model : null,
+        agent: source.agent !== undefined ? source.agent : null,
       };
     }
 
@@ -202,6 +203,55 @@ window.__ModuleLoader__.load({
         return list;
       }
       return EMPTY;
+    }
+
+    /** Tool calls captured on one assistant message (v0.4.3). */
+    function yuanToolList(message) {
+      if (message === null || typeof message !== 'object' || !Array.isArray(message.tools)) return EMPTY;
+      return message.tools.filter((tool) => tool !== null && typeof tool === 'object');
+    }
+
+    /** Hydrate the last assistant chat entry with the tools of a fresh chat response. */
+    function withToolsOnLastAssistant(chat, tools, usedAgent) {
+      if (!Array.isArray(tools) || tools.length === 0 || !Array.isArray(chat)) return chat;
+      const next = chat.slice();
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        const message = next[index];
+        if (message === null || typeof message !== 'object' || message.role !== 'assistant') continue;
+        if (!Array.isArray(message.tools) || message.tools.length === 0) {
+          next[index] = {
+            ...message,
+            tools,
+            usedAgent: usedAgent === true || message.usedAgent === true,
+          };
+        }
+        break;
+      }
+      return next;
+    }
+
+    function yuanToolArgumentsText(tool) {
+      if (tool === null || typeof tool !== 'object') return '';
+      const value = tool.arguments;
+      if (typeof value === 'string') return value;
+      if (value === undefined || value === null) return '';
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    }
+
+    function yuanToolResultText(tool) {
+      if (tool === null || typeof tool !== 'object') return '';
+      const value = tool.result;
+      if (typeof value === 'string') return value;
+      if (value === undefined || value === null) return '';
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
     }
 
     function yuanProposalLabel(proposal, t) {
@@ -348,12 +398,13 @@ window.__ModuleLoader__.load({
         this.patchState({ chat });
         try {
           const body = await yuanRequest(YUAN_CHAT_API, { method: 'POST', body: { message } });
+          const responseChat = Array.isArray(body.chat) ? withToolsOnLastAssistant(body.chat, body.tools, body.usedAgent) : chat;
           const next =
             previous === null
-              ? normalizeYuanState(body)
+              ? { ...normalizeYuanState(body), chat: responseChat }
               : {
                   ...previous,
-                  chat: Array.isArray(body.chat) ? body.chat : chat,
+                  chat: responseChat,
                   suggestions: Array.isArray(body.suggestions) ? body.suggestions : previous.suggestions,
                   signals: Array.isArray(body.signals) ? body.signals : previous.signals,
                   badge: body.badge !== undefined ? body.badge : previous.badge,
@@ -788,6 +839,98 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'ls-yuan-markdown' }, renderMarkdown(text, t));
     }
 
+    const YUAN_TOOL_RESULT_LIMIT = 2000;
+
+    /** One tool call card: name + argument summary + collapsible result. */
+    function YuanToolCard({ t, tool }) {
+      const [argsOpen, setArgsOpen] = useState(false);
+      const [resultOpen, setResultOpen] = useState(false);
+      const name =
+        tool !== null && typeof tool === 'object' && typeof tool.name === 'string' && tool.name !== ''
+          ? tool.name
+          : t('toolCall');
+      const isError = tool !== null && typeof tool === 'object' && tool.isError === true;
+      const argsText = yuanToolArgumentsText(tool);
+      const rawResult = yuanToolResultText(tool);
+      const resultText =
+        rawResult.length > YUAN_TOOL_RESULT_LIMIT
+          ? rawResult.slice(0, YUAN_TOOL_RESULT_LIMIT) + '\u2026'
+          : rawResult;
+      const argsSummary = argsText.length > 120 ? argsText.slice(0, 117) + '\u2026' : argsText;
+      const stateLabel = isError ? t('toolError') : resultText === '' ? t('toolPending') : t('toolResult');
+      return h(
+        'div',
+        { className: 'ls-yuan-tool' + (isError ? ' ls-yuan-tool--error' : '') },
+        h(
+          'div',
+          { className: 'ls-yuan-tool__head' },
+          h(
+            'span',
+            { className: 'ls-yuan-tool__icon', 'aria-hidden': 'true' },
+            h(
+              'svg',
+              { width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+              h('path', {
+                d: 'M10.6 2.4a2.9 2.9 0 0 0-3.2 3.9L2.8 10.9a1.4 1.4 0 0 0 2 2l4.6-4.6a2.9 2.9 0 0 0 3.9-3.2l-1.8 1.8-1.9-.4-.4-1.9 1.4-1.4z',
+                stroke: 'currentColor',
+                strokeWidth: 1.1,
+                strokeLinejoin: 'round',
+              }),
+            ),
+          ),
+          h('span', { className: 'ls-yuan-tool__name' }, name),
+          h('span', { className: 'ls-yuan-tool__state' }, stateLabel),
+          argsText !== ''
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'ls-yuan-tool__toggle ls-yuan-tool__toggle--args',
+                  title: t('toolArgs'),
+                  'aria-label': t('toolArgs'),
+                  'aria-expanded': argsOpen ? 'true' : 'false',
+                  onClick: () => setArgsOpen((value) => !value),
+                },
+                argsOpen ? t('toolCollapse') : t('toolExpand'),
+              )
+            : null,
+        ),
+        argsText !== ''
+          ? h(
+              'button',
+              {
+                type: 'button',
+                className: 'ls-yuan-tool__args',
+                title: argsText,
+                onClick: () => setArgsOpen((value) => !value),
+              },
+              t('toolArgs') + ': ' + (argsOpen ? argsText : argsSummary),
+            )
+          : null,
+        argsOpen && argsText !== '' ? h('pre', { className: 'ls-yuan-tool__pre' }, argsText) : null,
+        h(
+          'div',
+          { className: 'ls-yuan-tool__result' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'ls-yuan-tool__toggle ls-yuan-tool__toggle--result',
+              'aria-expanded': resultOpen ? 'true' : 'false',
+              disabled: resultText === '',
+              onClick: () => setResultOpen((value) => !value),
+            },
+            resultText === ''
+              ? t('toolPending')
+              : t('toolResult') + ' \u00b7 ' + (resultOpen ? t('toolCollapse') : t('toolExpand')),
+          ),
+          resultText !== '' && resultOpen
+            ? h('pre', { className: 'ls-yuan-tool__pre' + (isError ? ' ls-yuan-tool__pre--error' : '') }, resultText)
+            : null,
+        ),
+      );
+    }
+
     function YuanSuggestionItem({ t, item, onAccept, onDismiss }) {
       const reasons = item !== null && typeof item === 'object' && Array.isArray(item.reasons) ? item.reasons : EMPTY;
       const source = yuanSourceLabel(item, t);
@@ -959,6 +1102,12 @@ window.__ModuleLoader__.load({
         model !== null && model.available === true
           ? t('yuanModelLabel') + ': ' + [model.provider, model.model].filter((value) => typeof value === 'string' && value !== '').join(' / ')
           : t('yuanModelOffline');
+      const agent =
+        state !== null && state.agent !== null && typeof state.agent === 'object' ? state.agent : null;
+      const agentEnabled = agent !== null && agent.enabled === true;
+      const agentReady = agent !== null && agent.ready === true;
+      const agentError = agent !== null && typeof agent.error === 'string' ? agent.error : '';
+      const agentDegraded = agentEnabled && !agentReady;
       const signalTone = (kind) => {
         let tone = '';
         for (const signal of signals) {
@@ -1134,11 +1283,15 @@ window.__ModuleLoader__.load({
                       ),
                     ),
                   ),
+                  h('div', { className: 'ls-yuan-welcome__hint' }, t('yuanAgentHint')),
                 )
               : chat.slice(-30).map((message, index) => {
                   const role = yuanMessageRole(message);
                   const messageText = yuanMessageText(message);
                   const proposals = yuanProposalList(message !== null && typeof message === 'object' ? message.proposals : null);
+                  const tools = yuanToolList(message);
+                  const messageAgentReady =
+                    (message !== null && typeof message === 'object' && message.usedAgent === true) || agentReady;
                   const messageKey = message !== null && typeof message.id === 'string' ? message.id : 'msg-' + index;
                   const time = message !== null && typeof message === 'object' ? formatStamp(message.at) : '';
                   if (role === 'assistant') {
@@ -1154,9 +1307,37 @@ window.__ModuleLoader__.load({
                           { className: 'ls-yuan-msghead' },
                           h('span', { className: 'ls-yuan-msgname' }, t('yuanAssistant')),
                           modelBadgeText !== '' ? h('span', { className: 'ls-yuan-model' }, modelBadgeText) : null,
+                          messageAgentReady
+                            ? h('span', { className: 'ls-yuan-agent' }, t('agentReady'))
+                            : agentDegraded
+                              ? h(
+                                  'span',
+                                  {
+                                    className: 'ls-yuan-agent ls-yuan-agent--degraded',
+                                    title: agentError !== '' ? agentError : undefined,
+                                  },
+                                  t('agentDegraded'),
+                                )
+                              : null,
                           time !== '' ? h('span', { className: 'ls-yuan-msgtime' }, time) : null,
                           h(CopyButton, { t, text: messageText, className: 'ls-yuan-copy--assistant' }),
                         ),
+                        tools.length > 0
+                          ? h(
+                              'div',
+                              { className: 'ls-yuan-tools' },
+                              tools.map((tool, toolIndex) =>
+                                h(YuanToolCard, {
+                                  key:
+                                    tool !== null && typeof tool.id === 'string'
+                                      ? tool.id
+                                      : 'tool-' + toolIndex,
+                                  t,
+                                  tool,
+                                }),
+                              ),
+                            )
+                          : null,
                         h('div', { className: 'ls-yuan-msgtext' }, h(MarkdownView, { t, text: messageText })),
                         proposals.length > 0
                           ? h(
@@ -1551,6 +1732,16 @@ window.__ModuleLoader__.load({
       yuanMemoryConfirm: '确认',
       yuanMemoryAdd: '记住：…',
       yuanComposerHint: 'Enter 发送 · Shift+Enter 换行',
+      toolCall: '工具调用',
+      toolResult: '结果',
+      toolError: '出错',
+      toolPending: '已调用',
+      toolArgs: '参数',
+      toolExpand: '展开',
+      toolCollapse: '收起',
+      agentReady: '工具已连接',
+      agentDegraded: '工具降级',
+      yuanAgentHint: '阿源可以调用工具读文件；一般不会主动翻你的文件，只在需要时读。',
       obsidianCardTitle: '数据源 · Obsidian 自动发现',
       obsidianCardHint: '自动发现含 .obsidian 的笔记库，并管理识别规则',
       obsidianAutoDetect: '自动发现',
@@ -1743,6 +1934,16 @@ window.__ModuleLoader__.load({
       yuanMemoryConfirm: 'Confirm',
       yuanMemoryAdd: 'Remember: …',
       yuanComposerHint: 'Enter to send · Shift+Enter for newline',
+      toolCall: 'Tool call',
+      toolResult: 'Result',
+      toolError: 'Error',
+      toolPending: 'Called',
+      toolArgs: 'Arguments',
+      toolExpand: 'Expand',
+      toolCollapse: 'Collapse',
+      agentReady: 'Tools connected',
+      agentDegraded: 'Tools degraded',
+      yuanAgentHint: 'Yuan can call tools to read files; it usually will not browse your files unless it needs to.',
       obsidianCardTitle: 'Data sources · Obsidian auto-detect',
       obsidianCardHint: 'Auto-detect vaults containing .obsidian and manage parsing rules',
       obsidianAutoDetect: 'Auto-detect',
@@ -2117,6 +2318,28 @@ window.__ModuleLoader__.load({
 .ls-yuan-send:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:2px}
 .ls-yuan-composer-hint{margin-top:2px;font-size:10px;color:var(--dsw-alias-label-tertiary);text-align:right}
 @keyframes ls-yuan-dot{0%,80%,100%{opacity:.35;transform:translateY(0)}40%{opacity:1;transform:translateY(-2px)}}
+.ls-yuan-tools{display:flex;flex-direction:column;gap:5px}
+.ls-yuan-tool{display:flex;flex-direction:column;gap:4px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base)}
+.ls-yuan-tool--error{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 6%,transparent)}
+.ls-yuan-tool__head{display:flex;align-items:center;gap:6px;min-width:0}
+.ls-yuan-tool__icon{display:inline-flex;flex:none;color:var(--dsw-alias-label-tertiary)}
+.ls-yuan-tool__name{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:55%}
+.ls-yuan-tool__state{font-size:9px;line-height:14px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);white-space:nowrap;flex:none}
+.ls-yuan-tool--error .ls-yuan-tool__state{color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 12%,transparent)}
+.ls-yuan-tool__toggle{font:inherit;font-size:10px;line-height:18px;padding:0 6px;border:none;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none}
+.ls-yuan-tool__toggle:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-tool__toggle:disabled{opacity:.6;cursor:default}
+.ls-yuan-tool__toggle:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-yuan-tool__toggle--args{margin-left:auto}
+.ls-yuan-tool__args{display:block;width:100%;box-sizing:border-box;text-align:left;font:inherit;font-size:10px;line-height:16px;padding:0;border:none;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ls-yuan-tool__args:hover{color:var(--dsw-alias-label-primary)}
+.ls-yuan-tool__args:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px;border-radius:var(--dsw-radius-xs)}
+.ls-yuan-tool__pre{margin:0;padding:4px 6px;border-radius:var(--dsw-radius-xs);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
+.ls-yuan-tool__pre--error{color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}
+.ls-yuan-tool__result{display:flex;flex-direction:column;gap:4px}
+.ls-yuan-agent{font-size:9px;line-height:14px;padding:0 5px;border-radius:999px;color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,transparent);white-space:nowrap}
+.ls-yuan-agent--degraded{color:var(--dsw-alias-state-warn-primary);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 14%,transparent)}
+.ls-yuan-welcome__hint{font-size:10px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}
 @media (max-width:720px){.ls-yuan-panel{max-height:60vh}.ls-yuan-pagecard{padding:12px}}
 @keyframes ls-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 @keyframes ls-pulse{0%,100%{opacity:.55}50%{opacity:1}}

@@ -3,6 +3,7 @@
 > 状态：实现中（2026-10-27）。前序契约见 `CONTRACT.md`(v1) / `CONTRACT-V2.md`(多设备) / `CONTRACT-V3.md`(行内操作)。
 > **v0.4.1 修订**：DSH 会话 todo 不再直接进看板（只作为阿源建议，accept 后才以 `kind:'suggestion'` 出现）；子代理/队友会话（title 命中 `teammate|subagent|研究队友|^you are a`）整会话不进建议箱；升级时一次性移除旧的 `source:'session'` 建议（tombstone，不复活）；阿源聊天区升级为自绘 Markdown 对话（头像/时间/模型徽标/代码块/快捷问题/失败重试/记忆确认）。
 > **v0.4.2 修订**：数据源卡折叠进「数据源」tab（待办 tab 默认，数据源首次进入才请求）；阿源多轮对话历史改放 system 文本，messages 只发 request-only 的本次 user 消息（宿主不接受无 durable id/source 的 assistant 历史，表现为 1ms 内 fallback「模型暂时不可用」）。
+> **v0.4.3 修订**：阿源改由真实 DSH Agent 会话驱动（默认 preset 全部工具 + `danger-full-access` 沙箱 + `never` 审批，与用户权限一致）；面板渲染 tool 卡（名/参数/结果/错误）；chat 响应新增 `tools`/`usedAgent`，state 新增 `agent{enabled,ready,sessionId,error}`；hub 增加密码保护的 `POST /api/yuan/chat`。
 > 本版本目标（用户原话）：「让这些 todo 的导入更自然、准确」；Obsidian 自动发现；会话 todo 只收「收尾型 / 高相关且大概率乐意做」的，且**必须点 accept**；新增全局管家 agent「阿源」：composer 左下 icon + 展开对话、记忆、红点分类信号（todo 建议 / 事项提醒 / 关键 deadline）。
 
 ## 0. 一句话架构

@@ -832,6 +832,7 @@ export function createHubHandler(opts) {
   }
   const password = typeof options.password === 'string' ? options.password : '';
   const boardProvider = typeof options.boardProvider === 'function' ? options.boardProvider : null;
+  const yuanChat = typeof options.yuanChat === 'function' ? options.yuanChat : null;
   const log = typeof options.log === 'function' ? options.log : () => {};
   const syncIntervalMs =
     typeof options.syncIntervalMs === 'number' &&
@@ -1069,6 +1070,32 @@ export function createHubHandler(opts) {
           return;
         }
         await handleBoard(req, res);
+        return;
+      }
+      if (yuanChat !== null && pathname === '/api/yuan/chat') {
+        if (method !== 'POST') {
+          sendJson(res, 405, { ok: false, error: 'method not allowed' }, { allow: 'POST' });
+          return;
+        }
+        const body = await readJsonBody(req, res);
+        if (body === null) return;
+        const data = isPlainObject(body.value) ? body.value : {};
+        const message = typeof data.message === 'string' ? data.message.trim() : '';
+        if (message === '') {
+          sendJson(res, 400, { ok: false, error: 'message is empty' });
+          return;
+        }
+        try {
+          const result = await yuanChat(message);
+          sendJson(res, 200, {
+            ok: true,
+            reply: typeof result?.reply === 'string' ? result.reply : '',
+            tools: Array.isArray(result?.tools) ? result.tools : [],
+            usedAgent: result?.usedAgent === true,
+          });
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: String(error?.message ?? error) });
+        }
         return;
       }
 
