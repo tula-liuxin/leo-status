@@ -163,6 +163,8 @@ window.__ModuleLoader__.load({
       actionFailed: '操作失败',
       actionPending: '处理中…',
       actionDismiss: '关闭',
+      checkDone: '标记完成',
+      checkUndone: '标记未完成',
     };
 
     const en = {
@@ -256,6 +258,8 @@ window.__ModuleLoader__.load({
       actionFailed: 'Action failed',
       actionPending: 'Working…',
       actionDismiss: 'Dismiss',
+      checkDone: 'Mark done',
+      checkUndone: 'Mark undone',
     };
 
     const CSS = `
@@ -328,9 +332,14 @@ window.__ModuleLoader__.load({
 .ls-row{display:flex;align-items:center;gap:8px;min-height:36px;padding:7px 12px;border-top:1px solid var(--dsw-alias-border-l1)}
 .ls-row:first-child{border-top:none}
 .ls-row:hover{background:var(--dsw-alias-bg-layer-2)}
-.ls-check{display:inline-flex;flex:none;color:var(--dsw-alias-label-tertiary)}
+.ls-check{display:inline-flex;align-items:center;justify-content:center;flex:none;width:20px;height:20px;color:var(--dsw-alias-label-tertiary)}
 .ls-check--done{color:var(--dsw-alias-state-success-primary)}
 .ls-check--cancelled{color:var(--dsw-alias-label-secondary)}
+.ls-check-btn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;flex:none}
+.ls-check-btn:hover:not(:disabled){color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
+.ls-check-btn:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-check-btn:disabled{opacity:.5;cursor:default}
+.ls-check-btn--done{color:var(--dsw-alias-state-success-primary)}
 .ls-row__text{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ls-row--done .ls-row__text{color:var(--dsw-alias-label-secondary);text-decoration:line-through}
 .ls-tags{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:220px;overflow:hidden}
@@ -819,44 +828,65 @@ window.__ModuleLoader__.load({
 
     // -- presentational building blocks ------------------------------------------
 
+    /** Status glyph artwork shared by the static and clickable checkbox variants. */
+    function CheckIcon({ mode }) {
+      const complete = mode === 'done' || mode === 'cancelled';
+      return h(
+        'svg',
+        { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+        h('rect', {
+          x: 2.5,
+          y: 2.5,
+          width: 11,
+          height: 11,
+          rx: 2.5,
+          stroke: 'currentColor',
+          strokeWidth: complete ? 0 : 1.4,
+          fill: complete ? 'currentColor' : 'none',
+        }),
+        mode === 'done'
+          ? h('path', {
+              d: 'M5 8.2l1.9 1.9 4.1-4.2',
+              stroke: 'var(--dsw-alias-bg-layer-1)',
+              strokeWidth: 1.7,
+              strokeLinecap: 'round',
+              strokeLinejoin: 'round',
+            })
+          : mode === 'cancelled'
+            ? h('path', {
+                d: 'M5.4 8h5.2',
+                stroke: 'var(--dsw-alias-bg-layer-1)',
+                strokeWidth: 1.7,
+                strokeLinecap: 'round',
+              })
+            : null,
+      );
+    }
+
     /** Read-only status glyph: empty box for open, checked box for done, dashed box for cancelled. */
     function CheckGlyph({ mode, label }) {
-      const complete = mode === 'done' || mode === 'cancelled';
       const className =
         'ls-check' + (mode === 'done' ? ' ls-check--done' : mode === 'cancelled' ? ' ls-check--cancelled' : '');
       return h(
         'span',
         { className, role: 'img', 'aria-label': label },
-        h(
-          'svg',
-          { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
-          h('rect', {
-            x: 2.5,
-            y: 2.5,
-            width: 11,
-            height: 11,
-            rx: 2.5,
-            stroke: 'currentColor',
-            strokeWidth: complete ? 0 : 1.4,
-            fill: complete ? 'currentColor' : 'none',
-          }),
-          mode === 'done'
-            ? h('path', {
-                d: 'M5 8.2l1.9 1.9 4.1-4.2',
-                stroke: 'var(--dsw-alias-bg-layer-1)',
-                strokeWidth: 1.7,
-                strokeLinecap: 'round',
-                strokeLinejoin: 'round',
-              })
-            : mode === 'cancelled'
-              ? h('path', {
-                  d: 'M5.4 8h5.2',
-                  stroke: 'var(--dsw-alias-bg-layer-1)',
-                  strokeWidth: 1.7,
-                  strokeLinecap: 'round',
-                })
-              : null,
-        ),
+        h(CheckIcon, { mode }),
+      );
+    }
+
+    /** Clickable status checkbox for local markdown rows (v3.1); toggles done/undone. */
+    function CheckButton({ mode, label, pending, onClick }) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'ls-check-btn' + (mode === 'done' ? ' ls-check-btn--done' : ''),
+          title: label,
+          'aria-label': label,
+          disabled: pending,
+          onClick,
+        },
+        h(CheckIcon, { mode }),
       );
     }
 
@@ -1017,6 +1047,14 @@ window.__ModuleLoader__.load({
         isLocalTodo(todo, localDeviceId) &&
         typeof todo.id === 'string' &&
         todo.id !== '';
+      // The status checkbox toggles done/undone only for editable, non-cancelled rows.
+      const checkboxEditable = actionable && todo.cancelled !== true;
+      const rowPending = pendingTodoId === todo.id;
+      const checkLabel = rowPending
+        ? t('actionPending')
+        : done
+          ? t('checkUndone')
+          : t('checkDone');
       const tooltip =
         rowTooltip(todo, t) + (showDevice ? '\n' + t('device') + ': ' + deviceLabel : '');
       return h(
@@ -1026,10 +1064,17 @@ window.__ModuleLoader__.load({
           title: tooltip,
           style: indent > 0 ? { paddingLeft: 12 + indent * 14 + 'px' } : undefined,
         },
-        h(CheckGlyph, {
-          mode: done ? 'done' : cancelled ? 'cancelled' : 'open',
-          label: done ? t('groupDone') : cancelled ? t('cancelled') : t('statOpen'),
-        }),
+        checkboxEditable
+          ? h(CheckButton, {
+              mode: done ? 'done' : 'open',
+              label: checkLabel,
+              pending: rowPending,
+              onClick: () => onTodoAction(todo, done ? 'undone' : 'done'),
+            })
+          : h(CheckGlyph, {
+              mode: done ? 'done' : cancelled ? 'cancelled' : 'open',
+              label: done ? t('groupDone') : cancelled ? t('cancelled') : t('statOpen'),
+            }),
         cancelled ? h('span', { className: 'ls-cancel', title: t('cancelled') }, t('cancelled')) : null,
         h('span', { className: 'ls-row__text' }, text),
         tags.length > 0

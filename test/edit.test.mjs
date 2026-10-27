@@ -11,7 +11,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { EditError, isTodoLine, cancelLine, restoreLine, applyTodoAction } from '../edit.js';
+import { EditError, isTodoLine, cancelLine, restoreLine, setDoneLine, applyTodoAction } from '../edit.js';
 import { aggregate } from '../scan.js';
 
 /* ------------------------------------------------------------------ */
@@ -486,5 +486,175 @@ test('applyTodoAction unsupported：非 todo 行 / 非法 action', async () => {
       applyTodoAction({ action: 'cancel', filePath, line: 1, raw: '普通文本' }),
       'outside-roots',
     );
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* v3.1：勾选 / 取消勾选（setDoneLine + done/undone）                   */
+/* ------------------------------------------------------------------ */
+
+test('setDoneLine：正反向切换，其余（缩进/引用/bullet/元数据/行尾空白）逐字节保留', () => {
+  assert.equal(setDoneLine('- [ ] 写测试 📅 2026-11-01', true), '- [x] 写测试 📅 2026-11-01');
+  assert.equal(setDoneLine('- [x] 写测试 📅 2026-11-01', false), '- [ ] 写测试 📅 2026-11-01');
+
+  assert.equal(setDoneLine('\t- [ ] 已做的 📅 2026-10-30   ', true), '\t- [x] 已做的 📅 2026-10-30   ');
+  assert.equal(setDoneLine('> - [x] 引用任务', false), '> - [ ] 引用任务');
+  assert.equal(setDoneLine('  > - [ ] 引用缩进', true), '  > - [x] 引用缩进');
+  assert.equal(setDoneLine('* [ ] 星号任务', true), '* [x] 星号任务');
+  assert.equal(setDoneLine('+ [x] 加号任务', false), '+ [ ] 加号任务');
+  assert.equal(setDoneLine('12) [ ] 有序任务 #tag 🔺 [[链接]] @due(2026-11-01)', true), '12) [x] 有序任务 #tag 🔺 [[链接]] @due(2026-11-01)');
+  assert.equal(setDoneLine('- [ ] 每天写 🔁 every day', true), '- [x] 每天写 🔁 every day');
+  assert.equal(setDoneLine('- [x] 带尾空格   ', false), '- [ ] 带尾空格   ');
+});
+
+test('setDoneLine：已是目标状态幂等；大写 [X] 不强行改写', () => {
+  assert.equal(setDoneLine('- [x] 任务', true), '- [x] 任务');
+  assert.equal(setDoneLine('- [X] 任务', true), '- [X] 任务');
+  assert.equal(setDoneLine('- [ ] 任务', false), '- [ ] 任务');
+  // 目标为 false 时 [X] 也要变成 [ ]
+  assert.equal(setDoneLine('- [X] 任务', false), '- [ ] 任务');
+  assert.equal(setDoneLine('\t- [x] 任务 📅 2026-11-01', true), '\t- [x] 任务 📅 2026-11-01');
+});
+
+test('setDoneLine：非 todo 行与作废行抛 unsupported', () => {
+  const unsupported = [
+    '普通文本',
+    '# 标题',
+    '- [  ] 任务',
+    '- [] 任务',
+    '- [z] 任务',
+    '',
+    '- [-] 任务',
+    '- [/] 任务',
+    '- [ ] ~~作废任务~~',
+    '\t- [x] ~~已做的~~ 📅 2026-10-30',
+    '> - [ ] ~~引用里的作废~~',
+    '- [ ] ~~每天写~~ 🔁 every day',
+  ];
+  for (const line of unsupported) {
+    assert.throws(
+      () => setDoneLine(line, true),
+      (error) => error instanceof EditError && error.code === 'unsupported',
+      `应抛 unsupported: ${JSON.stringify(line)}`,
+    );
+  }
+  assert.throws(() => setDoneLine(null, true), (error) => error instanceof EditError && error.code === 'unsupported');
+});
+
+test('applyTodoAction done / undone：写回文件、scan.js 状态变化、幂等、无 tmp 残留', async () => {
+  await withTempDir(async (dir) => {
+    const original = [
+      '# 待办',
+      '',
+      '- [ ] 写测试 📅 2026-11-01',
+      '- [x] 已完成的',
+      '- [ ] 每天写 🔁 every day',
+      '',
+    ].join('\n');
+    const filePath = await writeFixture(dir, 'done.md', original);
+    const roots = rootsOf(dir);
+
+    // done：[ ] -> [x]
+    const doneResult = await applyTodoAction({
+      action: 'done',
+      filePath,
+      line: 3,
+      raw: '- [ ] 写测试 📅 2026-11-01',
+      roots,
+    });
+    assert.deepEqual(doneResult, {
+      action: 'done',
+      filePath,
+      line: 3,
+      raw: '- [x] 写测试 📅 2026-11-01',
+    });
+    const afterDone = [
+      '# 待办',
+      '',
+      '- [x] 写测试 📅 2026-11-01',
+      '- [x] 已完成的',
+      '- [ ] 每天写 🔁 every day',
+      '',
+    ].join('\n');
+    assert.equal(await fs.readFile(filePath, 'utf8'), afterDone);
+    await assertNoTmp(dir);
+
+    const doneSnapshot = await aggregate(scanConfig(dir), { force: true });
+    const doneTodo = doneSnapshot.todos.find((todo) => todo.line === 3);
+    assert.equal(doneTodo.done, true);
+    assert.equal(doneTodo.cancelled, false);
+    assert.equal(doneTodo.text, '写测试');
+    assert.equal(doneTodo.due, '2026-11-01');
+
+    // undone：[x] -> [ ]，文件逐字节复原
+    await applyTodoAction({
+      action: 'undone',
+      filePath,
+      line: 3,
+      raw: '- [x] 写测试 📅 2026-11-01',
+      roots,
+    });
+    assert.equal(await fs.readFile(filePath, 'utf8'), original);
+    await assertNoTmp(dir);
+
+    const undoneSnapshot = await aggregate(scanConfig(dir), { force: true });
+    assert.equal(undoneSnapshot.todos.find((todo) => todo.line === 3).done, false);
+
+    // done 幂等：已完成行再 done，文件不变
+    const before = await fs.readFile(filePath, 'utf8');
+    const idempotent = await applyTodoAction({ action: 'done', filePath, line: 4, raw: '- [x] 已完成的', roots });
+    assert.equal(idempotent.raw, '- [x] 已完成的');
+    assert.equal(await fs.readFile(filePath, 'utf8'), before);
+
+    // 作废行不能勾选：先 cancel 再 done => unsupported，文件不变
+    await applyTodoAction({ action: 'cancel', filePath, line: 5, raw: '- [ ] 每天写 🔁 every day', roots });
+    const cancelledLine = (await fs.readFile(filePath, 'utf8')).split('\n')[4];
+    assert.equal(cancelledLine, '- [ ] ~~每天写~~ 🔁 every day');
+    const afterCancel = await fs.readFile(filePath, 'utf8');
+    await assertEditError(
+      applyTodoAction({ action: 'done', filePath, line: 5, raw: cancelledLine, roots }),
+      'unsupported',
+    );
+    await assertEditError(
+      applyTodoAction({ action: 'undone', filePath, line: 5, raw: cancelledLine, roots }),
+      'unsupported',
+    );
+    assert.equal(await fs.readFile(filePath, 'utf8'), afterCancel);
+    await assertNoTmp(dir);
+  });
+});
+
+test('applyTodoAction done：CRLF + BOM + 行尾空白原样保留', async () => {
+  await withTempDir(async (dir) => {
+    const original = '\uFEFF# 标题\r\n\r\n- [ ] 写测试 📅 2026-11-01   \r\n';
+    const filePath = await writeFixture(dir, 'crlf-done.md', original);
+    const roots = rootsOf(dir);
+
+    const result = await applyTodoAction({
+      action: 'done',
+      filePath,
+      line: 3,
+      raw: '- [ ] 写测试 📅 2026-11-01   ',
+      roots,
+    });
+    assert.equal(result.raw, '- [x] 写测试 📅 2026-11-01   ');
+
+    const expected = '\uFEFF# 标题\r\n\r\n- [x] 写测试 📅 2026-11-01   \r\n';
+    const afterDone = await fs.readFile(filePath, 'utf8');
+    assert.equal(afterDone, expected);
+    assert.ok(afterDone.startsWith('\uFEFF')); // 仍只有一个 BOM
+    assert.equal(afterDone.split('\uFEFF').length, 2);
+    assert.equal(afterDone.replace(/\r\n/g, '').includes('\n'), false);
+    assert.equal(afterDone.replace(/\r\n/g, '').includes('\r'), false);
+
+    await applyTodoAction({
+      action: 'undone',
+      filePath,
+      line: 3,
+      raw: '- [x] 写测试 📅 2026-11-01   ',
+      roots,
+    });
+    assert.equal(await fs.readFile(filePath, 'utf8'), original);
+    await assertNoTmp(dir);
   });
 });

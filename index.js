@@ -35,7 +35,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.3.1'
+export const PLUGIN_VERSION = '0.3.2'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -641,7 +641,8 @@ export function apply(ctx, config) {
 
   async function performTodoAction(body) {
     const action = body !== null && typeof body === 'object' ? body.action : null
-    if (action !== 'cancel' && action !== 'restore' && action !== 'delete') {
+    const allowed = action === 'cancel' || action === 'restore' || action === 'delete' || action === 'done' || action === 'undone'
+    if (!allowed) {
       throw new EditError('unsupported', '不支持的操作')
     }
     const id = normalizeTodoId(body.id)
@@ -672,8 +673,7 @@ export function apply(ctx, config) {
       action,
       line: result.line,
       raw: result.raw,
-      todo: action === 'delete' ? null : updated ?? null,
-      board,
+      todo: action === 'delete' ? null : updated ?? null,      board,
     }
   }
 
@@ -859,3 +859,4 @@ export function apply(ctx, config) {
     log('routes ready ·', [LOCAL_API, JOIN_API, STATUS_API, ACTION_API].join(', '))
   })
 }
+

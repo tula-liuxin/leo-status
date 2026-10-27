@@ -1,7 +1,7 @@
 /**
- * leo-status · 行内写回（v3）
+ * leo-status · 行内写回（v3 / v3.1）
  *
- * 只对本地 Markdown 来源的 todo 行生效：作废 / 启用(撤销作废) / 删除。
+ * 只对本地 Markdown 来源的 todo 行生效：作废 / 启用(撤销作废) / 删除 / 勾选 / 取消勾选。
  * 纯 ESM、无第三方依赖，遵守 `leo-status/CONTRACT-V3.md` §1/§2。
  *
  * 导出：
@@ -9,11 +9,13 @@
  *   isTodoLine(line)                 => boolean（与 scan.js 的复选框正则一致）
  *   cancelLine(line)                 => string；作废（正文包 ~~，保留缩进/引用/bullet/checkbox/元数据）
  *   restoreLine(line)                => string；启用（去掉包裹的首尾 ~~）
+ *   setDoneLine(line, done)          => string；勾选/取消勾选（`[ ]` ↔ `[x]`，其余逐字节保留）
  *   applyTodoAction(opts)            => Promise<{ action, filePath, line, raw }>
  *
- * 作废/启用是【纯行变换】：只改 `[ ]` 之后 rest 里的正文部分，把元数据留在 `~~` 外面，
- * 这样 scan.js 的「去元数据后整体被 ~~…~~ 包裹 ⇒ cancelled」判定才能成立，
- * 且 cancel → restore 能逐字节复原。行首的缩进 / `>` 引用 / bullet / checkbox 标记原样保留。
+ * 行变换都是【纯字符串操作】：作废/启用只改 `[ ]` 之后 rest 里的正文部分，把元数据留在
+ * `~~` 外面，这样 scan.js 的「去元数据后整体被 ~~…~~ 包裹 ⇒ cancelled」判定才能成立，
+ * 且 cancel → restore 能逐字节复原；勾选/取消勾选只替换 checkbox 里的那一个字符。
+ * 行首的缩进 / `>` 引用 / bullet / checkbox 标记 / 行尾空白原样保留。
  */
 
 import { promises as fsp } from 'node:fs';
@@ -177,6 +179,46 @@ export function restoreLine(line) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 勾选 / 取消勾选（v3.1）                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 是否为作废行：mark 为 `-`/`/`，或「去元数据后正文整体被 ~~…~~ 包裹」。
+ * 与 scan.js 的 cancelled 判定同源。
+ */
+function isCancelledLine(parsed) {
+  if (parsed.mark === '-' || parsed.mark === '/') return true;
+  const { first, last } = bodyRegion(parsed.rest);
+  if (first === -1) return false;
+  const segment = parsed.rest.slice(first, last + 1);
+  return segment.length >= 4 && segment.startsWith(STRIKE) && segment.endsWith(STRIKE);
+}
+
+/**
+ * 勾选 / 取消勾选：把 checkbox 标记在 `[ ]` 与 `[x]` 之间切换，其余字符逐字节保留。
+ * - `done === true` 写 `[x]`，`false` 写 `[ ]`；
+ * - 已是目标状态时幂等返回原行（`[X]` 也算已完成，不强行改成小写 `x`）；
+ * - 非 todo 行、作废行（mark `-`/`/` 或正文整体 `~~…~~`）抛 unsupported。
+ */
+export function setDoneLine(line, done) {
+  if (typeof line !== 'string') throw new EditError('unsupported', '不是合法的 todo 行');
+  const parsed = splitTodoLine(line);
+  if (!parsed) throw new EditError('unsupported', '不是合法的 todo 行');
+  if (isCancelledLine(parsed)) throw new EditError('unsupported', '作废行不能勾选/取消勾选');
+
+  const targetDone = Boolean(done);
+  const currentlyDone = parsed.mark === 'x' || parsed.mark === 'X';
+  if (currentlyDone === targetDone) return line;
+
+  // prefix 含缩进/引用/bullet + `[mark]` + `]` 后可选空白；其中最后一个 `[` 即 checkbox 开括号
+  const openBracket = parsed.prefix.lastIndexOf('[');
+  if (openBracket === -1) throw new EditError('unsupported', '找不到 checkbox 标记');
+  const markIndex = openBracket + 1;
+  const nextMark = targetDone ? 'x' : ' ';
+  return line.slice(0, markIndex) + nextMark + line.slice(markIndex + 1);
+}
+
+/* ------------------------------------------------------------------ */
 /* 路径校验 / 文件读写                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -233,7 +275,7 @@ async function atomicWrite(filePath, output) {
  * 对一个本地 Markdown todo 行执行写回动作。
  *
  * @param {{
- *   action: 'cancel'|'restore'|'delete',
+ *   action: 'cancel'|'restore'|'delete'|'done'|'undone',
  *   filePath: string,
  *   line: number,                       // 1-based
  *   raw: string,                        // scan.js 存的原始行（最多 500 字符）
@@ -246,7 +288,13 @@ export async function applyTodoAction(opts) {
   const options = opts !== null && typeof opts === 'object' ? opts : {};
   const { action, filePath, line, raw, roots } = options;
 
-  if (action !== 'cancel' && action !== 'restore' && action !== 'delete') {
+  if (
+    action !== 'cancel' &&
+    action !== 'restore' &&
+    action !== 'delete' &&
+    action !== 'done' &&
+    action !== 'undone'
+  ) {
     throw new EditError('unsupported', `不支持的操作: ${String(action)}`);
   }
   if (typeof filePath !== 'string' || filePath.trim() === '') {
@@ -303,8 +351,14 @@ export async function applyTodoAction(opts) {
     nextLines = lines.slice();
     nextLines[line - 1] = nextLine;
     resultRaw = nextLine;
-  } else {
+  } else if (action === 'restore') {
     const nextLine = restoreLine(lineText);
+    nextLines = lines.slice();
+    nextLines[line - 1] = nextLine;
+    resultRaw = nextLine;
+  } else {
+    // 'done' | 'undone'
+    const nextLine = setDoneLine(lineText, action === 'done');
     nextLines = lines.slice();
     nextLines[line - 1] = nextLine;
     resultRaw = nextLine;

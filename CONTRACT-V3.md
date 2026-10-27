@@ -16,6 +16,9 @@
   - 例：`\t- [x] 已做的 📅 2026-10-30` → `\t- [x] ~~已做的~~ 📅 2026-10-30`（保留 `[x]`，启用后回到已完成）
 - **启用（撤销作废）**：去掉 `rest` 里第一个 `~~` 和同一个包裹的最后一个 `~~`，其余不动。
 - **删除**：整行删除（含换行），不动其它行、不动缩进子行。
+- **勾选 / 取消勾选（v3.1 新增）**：把该行 checkbox 标记在 `[ ]` 与 `[x]` 之间切换，其余（缩进/引用/bullet/正文/元数据/`~~`）逐字节保留。
+  - 例：`- [ ] 写测试 📅 2026-11-01` → `- [x] 写测试 📅 2026-11-01`；反向 `[x]` → `[ ]`。
+  - 已是作废状态的行（mark 为 `-`/`/`，或去元数据后正文被 `~~…~~` 包裹）不参与勾选切换：Host 返回 `unsupported`，客户端也不给点。
 - 行尾空白、CRLF/LF、BOM 都要原样保留；文件用「同目录 `.tmp` + rename」原子替换。
 - 若该行当前不匹配预期（文件被改过）⇒ 抛 `changed`；找不到行 ⇒ `not-found`；文件不在配置的笔记根目录内 ⇒ `outside-roots`；行不是合法 todo 行 ⇒ `unsupported`。
 
@@ -26,10 +29,14 @@ export class EditError extends Error { /* name='EditError'; code: 'not-found'|'c
 export function isTodoLine(line)                 // 与 scan.js 的复选框正则一致
 export function cancelLine(line)                 // => string；不是 todo 行抛 unsupported
 export function restoreLine(line)                // => string
+export function setDoneLine(line, done)          // => string；done=true 写 [x]，false 写 [ ]；其余逐字节保留
 export async function applyTodoAction(opts)      // => Promise<{action,filePath,line,raw}>
-// opts = { action: 'cancel'|'restore'|'delete', filePath, line, raw, roots }
+// opts = { action: 'cancel'|'restore'|'delete'|'done'|'undone', filePath, line, raw, roots }
 // roots = effective scanConfig.markdownRoots（每项 { path }）；校验 filePath 必须落在某个 root 内（path.relative 不含 '..'）
 ```
+
+- `setDoneLine` 对作废行（mark `-`/`/` 或正文整体 `~~…~~`）抛 `unsupported`；对已经是目标状态的行幂等返回原行。
+- `done` / `undone` 两个动作在 `applyTodoAction` 里都走 `setDoneLine`（`done=true/false`）。
 
 - `raw` 是 scan.js 存的原始行（**最多 500 字符**）；校验时用 `lineText === raw || lineText.slice(0,500) === raw.slice(0,500)`。
 - `line` 为 1-based；越界 = `changed`。
@@ -42,7 +49,7 @@ export async function applyTodoAction(opts)      // => Promise<{action,filePath,
 
 ```jsonc
 // body
-{ "action": "cancel" | "restore" | "delete", "id": "local:md:obsidian-main:ideas/...:12" }
+{ "action": "cancel" | "restore" | "delete" | "done" | "undone", "id": "local:md:obsidian-main:ideas/...:12" }
 // 成功 200
 { "ok": true, "action": "cancel", "todo": { /* 更新后的该 todo（来自新扫描） */ }, "board": { /* getBoard(true) 的最新 Board */ } }
 // 失败：400/404/409/500 + { ok:false, error: "..." }
@@ -60,6 +67,7 @@ export async function applyTodoAction(opts)      // => Promise<{action,filePath,
   - 未作废：`作废` 按钮（circle-slash 图标）+ `删除`（trash 图标）；
   - 已作废：`启用` 按钮（rotate/undo 图标）+ `删除`。
   - 图标按钮 20×20，次要色，hover 变主题色；`title`/`aria-label` 本地化；不改变行高与现有布局。
+- **（v3.1）复选框可点**：上述可编辑且未作废的行，左侧 checkbox 图标变成按钮（`cursor:pointer`、hover 主题色/浅底、focus ring）；点击发送 `{action: todo.done ? 'undone' : 'done', id}`，期间 disabled；成功用返回 board 更新。只读行（DSH/远端设备）与已作废行的 checkbox 保持静态不可点。
 - 删除需要**二次确认**：第一次点击进入 armed 状态（图标变 error 色 + title「再点一次确认删除」，3 秒后自动复位），第二次点击才发送。
 - 点击动作：`POST /leo-status/api/todos/action`（同源 JSON，body `{action, id}`）；期间该行操作区 disabled；成功用返回的 `board` 走 `applyBoard`（没有 board 时回退 `refresh()`）；失败在工具栏下方显示错误条（自动消失或可关闭），不破坏现有数据。
 - 新增 locale：`actionCancel / actionRestore / actionDelete / actionDeleteConfirm / actionFailed / actionPending`（zh/en 两份）。
