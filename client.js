@@ -41,6 +41,45 @@ window.__ModuleLoader__.load({
     const EMPTY = Object.freeze([]);
     /** Bound translator for the plugin namespace; set once the plugin applies. */
     let boundT = null;
+    /** Cordis client Context captured in apply(); components use host services through it. */
+    let clientContext = null;
+
+    /** Resolve a host client service defensively (null when unavailable). */
+    function clientService(name) {
+      try {
+        if (clientContext === null || typeof clientContext.get !== 'function') return null;
+        const service = clientContext.get(name);
+        return service === undefined ? null : service;
+      } catch {
+        return null;
+      }
+    }
+
+    /** Best-effort: make the agent session visible in the current workspace. */
+    function insertSessionIntoCurrentWorkspace(sessionId) {
+      try {
+        const workspaces = clientService('workspaces');
+        if (workspaces === null || workspaces === undefined) return;
+        let workspaceId = '';
+        if (typeof workspaces.currentWorkspaceId === 'string') workspaceId = workspaces.currentWorkspaceId;
+        else if (typeof workspaces.getCurrentWorkspaceId === 'function') {
+          const current = workspaces.getCurrentWorkspaceId();
+          workspaceId = typeof current === 'string' ? current : '';
+        } else if (typeof workspaces.getSnapshot === 'function') {
+          const snapshot = workspaces.getSnapshot();
+          if (snapshot !== null && typeof snapshot === 'object' && typeof snapshot.currentWorkspaceId === 'string') {
+            workspaceId = snapshot.currentWorkspaceId;
+          }
+        }
+        if (workspaceId === '' || typeof workspaces.insertSessionBefore !== 'function') return;
+        const result = workspaces.insertSessionBefore(workspaceId, sessionId);
+        if (result !== null && typeof result === 'object' && typeof result.catch === 'function') {
+          result.catch(() => {});
+        }
+      } catch {
+        /* best-effort only; openSession still runs */
+      }
+    }
 
     /**
      * 页面 token（Host 注入到 index HTML 的 window.__LEO_STATUS_PAGE_TOKEN__）。
@@ -408,6 +447,7 @@ window.__ModuleLoader__.load({
                   suggestions: Array.isArray(body.suggestions) ? body.suggestions : previous.suggestions,
                   signals: Array.isArray(body.signals) ? body.signals : previous.signals,
                   badge: body.badge !== undefined ? body.badge : previous.badge,
+                  agent: body.agent !== undefined ? body.agent : previous.agent,
                 };
           this.set({ sending: false, error: null, failedText: null, state: next });
           return body;
@@ -1065,6 +1105,7 @@ window.__ModuleLoader__.load({
       const [memoryOpen, setMemoryOpen] = useState(false);
       const [draft, setDraft] = useState('');
       const [notice, setNotice] = useState(null);
+      const [nativeError, setNativeError] = useState(null);
       const chatRef = useRef(null);
       const textareaRef = useRef(null);
       const sectionRefs = useRef({});
@@ -1133,6 +1174,25 @@ window.__ModuleLoader__.load({
           setNotice(result !== null ? t('yuanDismissed') : null);
         });
       };
+      const openNativeSession = () => {
+        const sessionId = agent !== null && typeof agent.sessionId === 'string' ? agent.sessionId : '';
+        if (agentReady !== true || sessionId === '') return;
+        setNativeError(null);
+        try {
+          const uiWorkspace = clientService('uiWorkspace');
+          if (uiWorkspace === null || uiWorkspace === undefined || typeof uiWorkspace.openSession !== 'function') {
+            setNativeError('uiWorkspace unavailable');
+            return;
+          }
+          insertSessionIntoCurrentWorkspace(sessionId);
+          const result = uiWorkspace.openSession(sessionId);
+          if (result !== null && typeof result === 'object' && typeof result.catch === 'function') {
+            result.catch((error) => setNativeError(describeError(error)));
+          }
+        } catch (error) {
+          setNativeError(describeError(error));
+        }
+      };
       const sendText = (value) => {
         const text = typeof value === 'string' ? value.trim() : '';
         if (text === '' || store.sending) return;
@@ -1176,12 +1236,50 @@ window.__ModuleLoader__.load({
             h('div', { className: 'ls-yuan-sub' }, modelText + ' \u00b7 ' + t('yuanSubtitle')),
           ),
           h(
-            'button',
-            { type: 'button', className: 'ls-yuan-close', title: t('yuanClose'), 'aria-label': t('yuanClose'), onClick: () => store.closePanel() },
-            '\u00d7',
+            'div',
+            { className: 'ls-yuan-head__actions' },
+            agentReady && agent !== null && typeof agent.sessionId === 'string' && agent.sessionId !== ''
+              ? h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'ls-yuan-native',
+                    title: t('openNativeSessionHint'),
+                    'aria-label': t('openNativeSession'),
+                    onClick: openNativeSession,
+                  },
+                  h(
+                    'svg',
+                    { width: 12, height: 12, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+                    h('path', {
+                      d: 'M6 3.5H3.5v9h9V10',
+                      stroke: 'currentColor',
+                      strokeWidth: 1.3,
+                      strokeLinecap: 'round',
+                      strokeLinejoin: 'round',
+                    }),
+                    h('path', {
+                      d: 'M8.5 2.5h5v5M13.5 2.5L8 8',
+                      stroke: 'currentColor',
+                      strokeWidth: 1.3,
+                      strokeLinecap: 'round',
+                      strokeLinejoin: 'round',
+                    }),
+                  ),
+                  h('span', { className: 'ls-yuan-native__label' }, t('openNativeSession')),
+                )
+              : null,
+            h(
+              'button',
+              { type: 'button', className: 'ls-yuan-close', title: t('yuanClose'), 'aria-label': t('yuanClose'), onClick: () => store.closePanel() },
+              '\u00d7',
+            ),
           ),
         ),
         notice !== null ? h('div', { className: 'ls-yuan-notice' }, notice) : null,
+        nativeError !== null
+          ? h('div', { className: 'ls-yuan-error' }, t('openNativeSession') + ': ' + nativeError)
+          : null,
         store.error !== null && store.failedText === null
           ? h(
               'div',
@@ -1742,6 +1840,8 @@ window.__ModuleLoader__.load({
       agentReady: '工具已连接',
       agentDegraded: '工具降级',
       yuanAgentHint: '阿源可以调用工具读文件；一般不会主动翻你的文件，只在需要时读。',
+      openNativeSession: '原生会话',
+      openNativeSessionHint: '在 DSH 原生会话界面打开阿源的 Agent 会话',
       obsidianCardTitle: '数据源 · Obsidian 自动发现',
       obsidianCardHint: '自动发现含 .obsidian 的笔记库，并管理识别规则',
       obsidianAutoDetect: '自动发现',
@@ -1944,6 +2044,8 @@ window.__ModuleLoader__.load({
       agentReady: 'Tools connected',
       agentDegraded: 'Tools degraded',
       yuanAgentHint: 'Yuan can call tools to read files; it usually will not browse your files unless it needs to.',
+      openNativeSession: 'Native session',
+      openNativeSessionHint: 'Open Yuan agent session in the native DSH chat UI',
       obsidianCardTitle: 'Data sources · Obsidian auto-detect',
       obsidianCardHint: 'Auto-detect vaults containing .obsidian and manage parsing rules',
       obsidianAutoDetect: 'Auto-detect',
@@ -2147,6 +2249,10 @@ window.__ModuleLoader__.load({
 .ls-yuan-close{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:14px;line-height:1;cursor:pointer;flex:none}
 .ls-yuan-close:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .ls-yuan-close:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-yuan-head__actions{display:flex;align-items:center;gap:6px;flex:none}
+.ls-yuan-native{display:inline-flex;align-items:center;gap:4px;font:inherit;font-size:10px;line-height:20px;padding:0 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}
+.ls-yuan-native:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-yuan-native:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
 .ls-yuan-chips{display:flex;flex-wrap:wrap;gap:6px}
 .ls-yuan-chip{display:inline-flex;align-items:center;gap:4px;font:inherit;font-size:11px;line-height:20px;padding:0 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}
 .ls-yuan-chip:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
@@ -4566,6 +4672,7 @@ window.__ModuleLoader__.load({
     // -- plugin apply ------------------------------------------------------------
 
     function apply(ctx) {
+      clientContext = ctx;
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'leo-status: dictionaries');
       boundT = ctx.locale.bind(NS);
 
