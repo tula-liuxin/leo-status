@@ -38,6 +38,31 @@ window.__ModuleLoader__.load({
     /** Bound translator for the plugin namespace; set once the plugin applies. */
     let boundT = null;
 
+    /**
+     * 页面 token（Host 注入到 index HTML 的 window.__LEO_STATUS_PAGE_TOKEN__）。
+     * DSH 的 cookie 鉴权在部分窗口/重启后会 401，token 让插件 API 不依赖 cookie；
+     * cookie 仍是 Host 侧的回退，两边任一通过即可。
+     */
+    function pageToken() {
+      try {
+        const value = typeof window !== 'undefined' ? window.__LEO_STATUS_PAGE_TOKEN__ : '';
+        return typeof value === 'string' ? value : '';
+      } catch {
+        return '';
+      }
+    }
+
+    /** 带页面 token 的同源 fetch；没有 token 时退回普通 cookie 请求。 */
+    function apiFetch(url, init) {
+      const options = { ...(init || {}) };
+      const headers = { ...(options.headers || {}) };
+      const token = pageToken();
+      if (token !== '') headers['x-leo-status-token'] = token;
+      options.headers = headers;
+      if (options.credentials === undefined) options.credentials = 'same-origin';
+      return fetch(url, options);
+    }
+
     const PRIORITY_RANK = { highest: 0, high: 1, medium: 2, low: 3, lowest: 4 };
     const PRIORITY_LABEL_KEYS = {
       highest: 'priorityHighest',
@@ -1535,7 +1560,7 @@ window.__ModuleLoader__.load({
         setPending(true);
         setError(null);
         try {
-          const response = await fetch(JOIN_API, {
+          const response = await apiFetch(JOIN_API, {
             method: 'POST',
             credentials: 'same-origin',
             headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -1699,7 +1724,7 @@ window.__ModuleLoader__.load({
       const load = useCallback(async (force) => {
         setState((previous) => ({ ...previous, pending: true, error: null }));
         try {
-          const response = await fetch(force ? API + '?refresh=1' : API, {
+          const response = await apiFetch(force ? API + '?refresh=1' : API, {
             credentials: 'same-origin',
             headers: { accept: 'application/json' },
           });
@@ -1888,7 +1913,7 @@ window.__ModuleLoader__.load({
         setPendingTodoId(todo.id);
         setActionError(null);
         try {
-          const response = await fetch(ACTION_API, {
+          const response = await apiFetch(ACTION_API, {
             method: 'POST',
             credentials: 'same-origin',
             headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -2108,3 +2133,4 @@ window.__ModuleLoader__.load({
     };
   },
 });
+

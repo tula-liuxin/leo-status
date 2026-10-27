@@ -16,6 +16,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { aggregate, EMPTY_STATS } from './scan.js'
 import { createHubStore, buildBoard, createHubHandler, startHubServer } from './hub.js'
@@ -34,7 +35,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.3.0'
+export const PLUGIN_VERSION = '0.3.1'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -84,6 +85,13 @@ export function apply(ctx, config) {
   const rowConfig = config !== null && typeof config === 'object' ? config : {}
   const dataDir = resolveDataDir(rowConfig)
   const log = (...args) => console.log('[leo-status]', ...args)
+  /**
+   * 页面 token：DSH 的 cookie 鉴权（authorizeIndex）在部分窗口/重启后会失效（401），
+   * 所以插件在 index HTML 里注入一个每次启动随机生成的 token，页面 fetch 时带上它；
+   * cookie 鉴权仍保留为回退（两者任一通过即可）。
+   */
+  const pageToken = randomBytes(24).toString('hex')
+  const PAGE_TOKEN_HEADER = 'x-leo-status-token'
 
   /** @type {ReturnType<typeof defaultSettings>} */
   let settings = defaultSettings()
@@ -714,9 +722,55 @@ export function apply(ctx, config) {
   ctx.inject(['webServer', 'connection'], (http) => {
     const connection = http.connection
 
+    const tokenMatches = (req) => {
+      const header = req.headers !== null && typeof req.headers === 'object' ? req.headers[PAGE_TOKEN_HEADER] : undefined
+      if (typeof header !== 'string' || header === '') return false
+      const expected = Buffer.from(pageToken, 'utf8')
+      const actual = Buffer.from(header, 'utf8')
+      return actual.length === expected.length && timingSafeEqual(actual, expected)
+    }
+
     const authorized = (req, res) => {
-      if (typeof connection?.authorizeIndex === 'function') return connection.authorizeIndex(req, res)
+      const site = req.headers !== null && typeof req.headers === 'object' ? req.headers['sec-fetch-site'] : undefined
+      if (typeof site === 'string' && site.toLowerCase() === 'cross-site') {
+        try {
+          sendJson(res, 403, { ok: false, error: 'cross-site request rejected' })
+        } catch {
+          /* ignore */
+        }
+        return false
+      }
+      if (tokenMatches(req)) return true
+      if (typeof connection?.authorizeIndex === 'function') {
+        const ok = connection.authorizeIndex(req, res)
+        if (ok) return true
+        // 正常实现会自己写 401；兜底确保总有响应（也方便测试替身）。
+        const alreadySent = res !== null && typeof res === 'object' && (res.headersSent === true || res.writableEnded === true)
+        if (!alreadySent) {
+          try {
+            sendJson(res, 401, { ok: false, error: 'unauthorized' })
+          } catch {
+            /* ignore */
+          }
+        }
+        return false
+      }
       return true
+    }
+
+    // 把页面 token 注入 index HTML（页面里的 client 读 window.__LEO_STATUS_PAGE_TOKEN__）。
+    try {
+      ctx.effect(
+        () =>
+          http.webServer.tapIndex((html) => {
+            if (typeof html !== 'string' || html.includes('__LEO_STATUS_PAGE_TOKEN__')) return html
+            const script = `<script>window.__LEO_STATUS_PAGE_TOKEN__=${JSON.stringify(pageToken)}</script>`
+            return html.includes('</head>') ? html.replace('</head>', `${script}</head>`) : `${html}${script}`
+          }),
+        'leo-status: page token',
+      )
+    } catch (error) {
+      log('page token injection unavailable:', describeError(error))
     }
 
     const handler = async (req, res) => {
