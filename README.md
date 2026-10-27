@@ -121,7 +121,7 @@ plugin_manager install_bundle target="github:tula-liuxin/leo-status"
   - `suggestions.json`（建议箱：pending / accepted / dismissed / removed）
   - `yuan/chat.jsonl`、`yuan/memory.jsonl`、`yuan/reminders.json`、`yuan/state.json`（对话、记忆、提醒、已读游标）
   - `cache/scan-cache.json`（按 mtime+size 的增量扫描缓存，可随时删除）
-- 认证：中心 `/api/*` 除 `/api/health` 外要求 `Authorization: Bearer <hub.password>`；浏览器侧插件 API 沿用 DSH 页面 token（`x-leo-status-token`，持久化在 `<dataDir>/page-token`，插件重载不变）+ cookie 鉴权，拒绝 cross-site 请求。
+- 认证：中心 `/api/*` 除 `/api/health` 外要求 `Authorization: Bearer <hub.password>`；浏览器侧插件 API 沿用 DSH 页面 token（`x-leo-status-token` header 或 `?_leo_status_token=` query，持久化在 `<dataDir>/page-token`，插件重载不变；设备中心只转发 path/query，所以远程页面用 query）+ cookie 鉴权，拒绝 cross-site 请求。
 - 笔记扫描只读；写回只发生在你点「勾选/作废/删除」时（原子写，保留 EOL/BOM/行尾空白）。
 - 阿源聊天会把**看板摘要、待确认建议、记忆、提醒**发给宿主 `ctx.llm` 的默认模型；不发送笔记全文。模型生成的记忆默认 pending，确认后才进入上下文。
 - VPS 只做 TCP 转发，不落盘 todo；本机关机时远端不可用（显示本机缓存）。

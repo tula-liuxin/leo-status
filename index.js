@@ -39,7 +39,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.4.5'
+export const PLUGIN_VERSION = '0.4.6'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -1114,12 +1114,29 @@ export function apply(ctx, config) {
   ctx.inject(['webServer', 'connection'], (http) => {
     const connection = http.connection
 
+    const tokenMatchesValue = (value) => {
+      if (typeof value !== 'string' || value === '') return false
+      const expected = Buffer.from(pageToken, 'utf8')
+      const actual = Buffer.from(value, 'utf8')
+      return actual.length === expected.length && timingSafeEqual(actual, expected)
+    }
+
     const tokenMatches = (req) => {
       const header = req.headers !== null && typeof req.headers === 'object' ? req.headers[PAGE_TOKEN_HEADER] : undefined
-      if (typeof header !== 'string' || header === '') return false
-      const expected = Buffer.from(pageToken, 'utf8')
-      const actual = Buffer.from(header, 'utf8')
-      return actual.length === expected.length && timingSafeEqual(actual, expected)
+      return tokenMatchesValue(header)
+    }
+
+    /**
+     * 设备中心转发会剥掉自定义 header（只保留 path/query），所以 token 也允许
+     * 走 `?_leo_status_token=` 查询参数；本地/远程都能用同一套鉴权。
+     */
+    const queryTokenMatches = (req) => {
+      try {
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        return tokenMatchesValue(url.searchParams.get('_leo_status_token') ?? '')
+      } catch {
+        return false
+      }
     }
 
     const authorized = (req, res) => {
@@ -1132,7 +1149,7 @@ export function apply(ctx, config) {
         }
         return false
       }
-      if (tokenMatches(req)) return true
+      if (tokenMatches(req) || queryTokenMatches(req)) return true
       if (typeof connection?.authorizeIndex === 'function') {
         const ok = connection.authorizeIndex(req, res)
         if (ok) return true

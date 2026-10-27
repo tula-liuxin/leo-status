@@ -103,7 +103,14 @@ window.__ModuleLoader__.load({
       if (token !== '') headers['x-leo-status-token'] = token;
       options.headers = headers;
       if (options.credentials === undefined) options.credentials = 'same-origin';
-      return fetch(url, options);
+      // 设备中心（dsh.agencyarche.com）的隧道只转发 path/query，不转发自定义
+      // header；token 同时放到 query，保证远程页面也能通过插件鉴权。
+      let target = url;
+      if (token !== '' && typeof url === 'string' && url.startsWith('/leo-status/')) {
+        const separator = url.includes('?') ? '&' : '?';
+        target = url + separator + '_leo_status_token=' + encodeURIComponent(token);
+      }
+      return fetch(target, options);
     }
 
     /** JSON request against the host API; rejects on HTTP/`ok:false` with the host message. */
