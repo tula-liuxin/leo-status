@@ -27,6 +27,10 @@ window.__ModuleLoader__.load({
     const JOIN_API = '/leo-status/api/join';
     /** Same-origin endpoint used by the inline todo actions (v3). */
     const ACTION_API = '/leo-status/api/todos/action';
+    /** v0.4 data-source endpoints: vault discovery, attach and settings. */
+    const VAULTS_API = '/leo-status/api/obsidian/vaults';
+    const VAULT_ATTACH_API = '/leo-status/api/obsidian/attach';
+    const SETTINGS_API = '/leo-status/api/settings';
     /** Default hub URL offered in the join form. */
     const DEFAULT_HUB_URL = 'https://dsh.agencyarche.com/leo-status';
     /** Device id reserved for the local device in a v2 board. */
@@ -61,6 +65,34 @@ window.__ModuleLoader__.load({
       options.headers = headers;
       if (options.credentials === undefined) options.credentials = 'same-origin';
       return fetch(url, options);
+    }
+
+    /** JSON request against the host API; rejects on HTTP/`ok:false` with the host message. */
+    async function apiJson(url, options) {
+      const settings = options !== null && typeof options === 'object' ? options : {};
+      const init = { credentials: 'same-origin', headers: { accept: 'application/json' } };
+      if (typeof settings.method === 'string') init.method = settings.method;
+      if (settings.body !== undefined) {
+        init.headers['content-type'] = 'application/json';
+        init.body = JSON.stringify(settings.body);
+      }
+      const response = await apiFetch(url, init);
+      let body = null;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      if (!response.ok || body === null || typeof body !== 'object' || body.ok !== true) {
+        const message =
+          body !== null && typeof body === 'object' && typeof body.error === 'string' && body.error !== ''
+            ? body.error
+            : response.ok
+              ? 'invalid response'
+              : 'HTTP ' + response.status;
+        throw new Error(message);
+      }
+      return body;
     }
 
     // -- yuan (阿源) endpoints and helpers ---------------------------------------
@@ -1037,6 +1069,38 @@ window.__ModuleLoader__.load({
       yuanExpandMemory: '展开记忆',
       yuanCollapseMemory: '收起记忆',
       yuanSignalEmpty: '暂无信号',
+      obsidianCardTitle: '数据源 · Obsidian 自动发现',
+      obsidianCardHint: '自动发现含 .obsidian 的笔记库，并管理识别规则',
+      obsidianAutoDetect: '自动发现',
+      obsidianAutoDetectOn: '已开启',
+      obsidianAutoDetectOff: '已关闭',
+      obsidianAutoDetectHint: '在桌面/文档等目录自动探测含 .obsidian 的库（roots 为空时生效）',
+      obsidianVaults: '检测到的库',
+      obsidianVaultsEmpty: '没找到含 .obsidian 的库，可在 settings.json 手动添加 markdownRoots',
+      obsidianAttach: '接入',
+      obsidianAttached: '已接入',
+      obsidianRoots: '已接入目录',
+      obsidianRootsEmpty: '还没有接入任何笔记目录',
+      obsidianRemove: '移除',
+      obsidianRules: '识别规则',
+      obsidianRuleCheckbox: '复选框',
+      obsidianRuleCheckboxHint: '识别 - [ ] / - [x] 任务行（始终启用）',
+      obsidianRuleTag: '#todo 标签行',
+      obsidianRuleTagHint: '识别含 #todo / #task / #待办 的行',
+      obsidianRuleMarker: 'TODO: 标记',
+      obsidianRuleMarkerHint: '识别行内 TODO: / 待办：标记',
+      obsidianRuleFrontmatter: 'frontmatter todo',
+      obsidianRuleFrontmatterHint: 'frontmatter 含 todo:true 或 status:todo',
+      obsidianRuleFrontmatterList: 'frontmatter 列表',
+      obsidianRuleFrontmatterListHint: 'frontmatter 的 todos: 列表项',
+      obsidianReadonly: '只读',
+      obsidianRescan: '重新扫描',
+      obsidianRescanning: '扫描中…',
+      obsidianLoading: '正在读取数据源…',
+      obsidianError: '数据源操作失败',
+      obsidianRetry: '重试',
+      obsidianNotes: '条笔记',
+      obsidianSaved: '已保存',
     };
 
     const en = {
@@ -1177,6 +1241,38 @@ window.__ModuleLoader__.load({
       yuanExpandMemory: 'Expand memory',
       yuanCollapseMemory: 'Collapse memory',
       yuanSignalEmpty: 'No signals',
+      obsidianCardTitle: 'Data sources · Obsidian auto-detect',
+      obsidianCardHint: 'Auto-detect vaults containing .obsidian and manage parsing rules',
+      obsidianAutoDetect: 'Auto-detect',
+      obsidianAutoDetectOn: 'On',
+      obsidianAutoDetectOff: 'Off',
+      obsidianAutoDetectHint: 'Scan common folders for vaults containing .obsidian (when roots are empty)',
+      obsidianVaults: 'Detected vaults',
+      obsidianVaultsEmpty: 'No vaults with .obsidian found; add markdownRoots in settings.json manually',
+      obsidianAttach: 'Attach',
+      obsidianAttached: 'Attached',
+      obsidianRoots: 'Attached folders',
+      obsidianRootsEmpty: 'No folders attached yet',
+      obsidianRemove: 'Remove',
+      obsidianRules: 'Parsing rules',
+      obsidianRuleCheckbox: 'Checkboxes',
+      obsidianRuleCheckboxHint: 'Detect - [ ] / - [x] task lines (always on)',
+      obsidianRuleTag: '#todo tag lines',
+      obsidianRuleTagHint: 'Detect lines containing #todo / #task or the configured tags',
+      obsidianRuleMarker: 'TODO: markers',
+      obsidianRuleMarkerHint: 'Detect inline TODO: / reminder markers',
+      obsidianRuleFrontmatter: 'frontmatter todo',
+      obsidianRuleFrontmatterHint: 'frontmatter with todo:true or status:todo',
+      obsidianRuleFrontmatterList: 'frontmatter list',
+      obsidianRuleFrontmatterListHint: 'Items in the frontmatter todos: list',
+      obsidianReadonly: 'Read-only',
+      obsidianRescan: 'Rescan',
+      obsidianRescanning: 'Scanning…',
+      obsidianLoading: 'Reading data sources…',
+      obsidianError: 'Data source action failed',
+      obsidianRetry: 'Retry',
+      obsidianNotes: 'notes',
+      obsidianSaved: 'Saved',
     };
 
     const CSS = `
@@ -1398,6 +1494,45 @@ window.__ModuleLoader__.load({
 .ls-yuan-pagecard__row:first-child{border-top:none;padding-top:0}
 .ls-yuan-pagecard__text{min-width:0;flex:1 1 240px;font-size:13px}
 .ls-yuan-pagecard__meta{font-size:11px;color:var(--dsw-alias-label-secondary);display:block;margin-top:2px}
+.ls-obs-card{margin-bottom:16px;padding:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1)}
+.ls-obs-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+.ls-obs-head__main{min-width:0;display:flex;flex-direction:column;gap:2px}
+.ls-obs-title{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600}
+.ls-obs-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:var(--dsw-radius-xs);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent);color:var(--dsw-alias-brand-primary);flex:none}
+.ls-obs-sub{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.ls-obs-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.ls-obs-section{display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1);margin-top:8px}
+.ls-obs-section__title{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+.ls-obs-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
+.ls-obs-row__main{min-width:0;flex:1 1 220px;display:flex;flex-direction:column;gap:1px}
+.ls-obs-name{font-size:12px;font-weight:500;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ls-obs-path{font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ls-obs-meta{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.ls-obs-badge{font-size:10px;line-height:16px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.ls-obs-badge--ok{color:var(--dsw-alias-state-success-primary);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 12%,transparent)}
+.ls-obs-empty{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.ls-obs-error{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:var(--dsw-alias-state-error-primary);word-break:break-word}
+.ls-obs-notice{font-size:12px;color:var(--dsw-alias-state-success-primary)}
+.ls-obs-rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px 14px}
+.ls-obs-rule{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.ls-obs-rule__main{min-width:0;display:flex;flex-direction:column;gap:1px}
+.ls-obs-rule__label{font-size:12px;font-weight:500;color:var(--dsw-alias-label-primary)}
+.ls-obs-rule__hint{font-size:11px;color:var(--dsw-alias-label-secondary)}
+.ls-obs-toggle{position:relative;display:inline-flex;align-items:center;width:34px;height:20px;padding:0;border:none;border-radius:999px;background:var(--dsw-alias-state-idle-primary);cursor:pointer;flex:none;margin-top:1px}
+.ls-obs-toggle[aria-checked="true"]{background:var(--dsw-alias-brand-primary)}
+.ls-obs-toggle:disabled{opacity:.5;cursor:default}
+.ls-obs-toggle:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:2px}
+.ls-obs-toggle__knob{position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--dsw-alias-switch-thumb);transition:transform .15s ease}
+.ls-obs-toggle[aria-checked="true"] .ls-obs-toggle__knob{transform:translateX(14px)}
+.ls-obs-checkbox{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;color:var(--dsw-alias-state-success-primary);flex:none}
+.ls-obs-readonly{font-size:10px;line-height:16px;padding:0 6px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);white-space:nowrap;flex:none;margin-top:2px}
+.ls-obs-btn{display:inline-flex;align-items:center;justify-content:center;font:inherit;font-size:12px;line-height:22px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;flex:none}
+.ls-obs-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ls-obs-btn:focus-visible{outline:2px solid var(--dsw-focus-ring-color);outline-offset:1px}
+.ls-obs-btn:disabled{opacity:.5;cursor:default}
+.ls-obs-btn--primary{border-color:transparent;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted)}
+.ls-obs-btn--primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary-inverted);opacity:.9}
+@media (max-width:720px){.ls-obs-rules{grid-template-columns:1fr}}
 @media (max-width:720px){.ls-yuan-panel{max-height:60vh}.ls-yuan-pagecard{padding:12px}}
 @keyframes ls-spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 @keyframes ls-pulse{0%,100%{opacity:.55}50%{opacity:1}}
@@ -2748,6 +2883,421 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // -- Obsidian data-source card (v0.4) ---------------------------------------
+
+    /** Rule rows rendered in the data-source card; only `checkbox` is read-only. */
+    const OBSIDIAN_RULE_DEFS = [
+      { key: 'checkbox', labelKey: 'obsidianRuleCheckbox', hintKey: 'obsidianRuleCheckboxHint', readonly: true },
+      { key: 'autoDetect', labelKey: 'obsidianAutoDetect', hintKey: 'obsidianAutoDetectHint', readonly: false },
+      { key: 'tagLines', labelKey: 'obsidianRuleTag', hintKey: 'obsidianRuleTagHint', readonly: false },
+      { key: 'markers', labelKey: 'obsidianRuleMarker', hintKey: 'obsidianRuleMarkerHint', readonly: false },
+      { key: 'frontmatter', labelKey: 'obsidianRuleFrontmatter', hintKey: 'obsidianRuleFrontmatterHint', readonly: false },
+      { key: 'frontmatterList', labelKey: 'obsidianRuleFrontmatterList', hintKey: 'obsidianRuleFrontmatterListHint', readonly: false },
+    ];
+
+    /** Keep the tail of a long filesystem path so rows stay scannable. */
+    function shortenPath(value, maxLength) {
+      const text = typeof value === 'string' ? value : '';
+      const limit = typeof maxLength === 'number' && maxLength > 8 ? maxLength : 52;
+      if (text.length <= limit) return text;
+      const parts = text.replace(/\\/g, '/').split('/').filter((part) => part !== '');
+      let tail = parts.slice(-2).join('/');
+      if (tail.length > limit - 2) tail = tail.slice(-(limit - 2));
+      return '\u2026/' + tail;
+    }
+
+    function readMarkdownRoots(settings) {
+      if (settings === null || typeof settings !== 'object') return EMPTY;
+      if (!Array.isArray(settings.markdownRoots)) return EMPTY;
+      return settings.markdownRoots.filter((root) => root !== null && typeof root === 'object');
+    }
+
+    function readObsidianRules(settings) {
+      const source = settings !== null && typeof settings === 'object' ? settings : {};
+      const obsidian = source.obsidian !== null && typeof source.obsidian === 'object' ? source.obsidian : {};
+      const conventions =
+        obsidian.conventions !== null && typeof obsidian.conventions === 'object' ? obsidian.conventions : {};
+      return {
+        autoDetect: obsidian.autoDetect !== false,
+        checkbox: true,
+        tagLines: conventions.tagLines !== false,
+        markers: conventions.markers === true,
+        frontmatter: conventions.frontmatter !== false,
+        frontmatterList: conventions.frontmatterList !== false,
+      };
+    }
+
+    /** Dashboard card: Obsidian vault discovery, attached roots and parsing toggles. */
+    function ObsidianSourceCard({ t, applyBoard }) {
+      const [vaults, setVaults] = useState(EMPTY);
+      const [roots, setRoots] = useState(EMPTY);
+      const [rules, setRules] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [notice, setNotice] = useState(null);
+      const [pendingKey, setPendingKey] = useState(null);
+      const mounted = useRef(true);
+
+      const load = async () => {
+        setLoading(true);
+        setError(null);
+        try {
+          const [vaultBody, settingsBody] = await Promise.all([apiJson(VAULTS_API), apiJson(SETTINGS_API)]);
+          if (!mounted.current) return;
+          setVaults(
+            Array.isArray(vaultBody.vaults)
+              ? vaultBody.vaults.filter(
+                  (vault) => vault !== null && typeof vault === 'object' && typeof vault.path === 'string',
+                )
+              : EMPTY,
+          );
+          const settings =
+            settingsBody.settings !== null && typeof settingsBody.settings === 'object'
+              ? settingsBody.settings
+              : {};
+          setRoots(readMarkdownRoots(settings));
+          setRules(readObsidianRules(settings));
+          setLoading(false);
+        } catch (loadError) {
+          if (!mounted.current) return;
+          setLoading(false);
+          setError(describeError(loadError));
+        }
+      };
+
+      useEffect(() => {
+        mounted.current = true;
+        load();
+        return () => {
+          mounted.current = false;
+        };
+      }, []);
+
+      const reloadVaults = async () => {
+        const body = await apiJson(VAULTS_API);
+        if (!mounted.current) return;
+        setVaults(
+          Array.isArray(body.vaults)
+            ? body.vaults.filter(
+                (vault) => vault !== null && typeof vault === 'object' && typeof vault.path === 'string',
+              )
+            : EMPTY,
+        );
+      };
+
+      const applySettingsPayload = (settings) => {
+        if (settings === null || typeof settings !== 'object') return;
+        setRoots(readMarkdownRoots(settings));
+        setRules(readObsidianRules(settings));
+      };
+
+      const beginAction = (key) => {
+        if (pendingKey !== null) return false;
+        setPendingKey(key);
+        setError(null);
+        setNotice(null);
+        return true;
+      };
+      const endAction = () => {
+        if (mounted.current) setPendingKey(null);
+      };
+
+      const attachVault = async (vault) => {
+        if (!beginAction('vault:' + vault.path)) return;
+        try {
+          const body = await apiJson(VAULT_ATTACH_API, {
+            method: 'POST',
+            body: { path: vault.path, label: typeof vault.name === 'string' ? vault.name : '' },
+          });
+          if (!mounted.current) return;
+          if (Array.isArray(body.roots)) setRoots(body.roots);
+          if (body.board !== null && typeof body.board === 'object') applyBoard(body.board);
+          await reloadVaults();
+          if (mounted.current) setNotice(t('obsidianAttached'));
+        } catch (actionError) {
+          if (mounted.current) setError(describeError(actionError));
+        } finally {
+          endAction();
+        }
+      };
+
+      const removeRoot = async (root) => {
+        if (!beginAction('root:' + (typeof root.id === 'string' ? root.id : root.path))) return;
+        const nextRoots = roots.filter(
+          (item) =>
+            item !== root &&
+            !(typeof root.path === 'string' && typeof item.path === 'string' && item.path === root.path),
+        );
+        try {
+          const body = await apiJson(SETTINGS_API, {
+            method: 'POST',
+            body: { markdownRoots: nextRoots },
+          });
+          if (!mounted.current) return;
+          applySettingsPayload(body.settings);
+          if (body.board !== null && typeof body.board === 'object') applyBoard(body.board);
+          await reloadVaults();
+          if (mounted.current) setNotice(t('obsidianSaved'));
+        } catch (actionError) {
+          if (mounted.current) setError(describeError(actionError));
+        } finally {
+          endAction();
+        }
+      };
+
+      const toggleRule = async (ruleKey) => {
+        if (ruleKey === 'checkbox' || rules === null) return;
+        if (!beginAction('rule:' + ruleKey)) return;
+        const nextValue = rules[ruleKey] !== true;
+        const patch =
+          ruleKey === 'autoDetect'
+            ? { obsidian: { autoDetect: nextValue } }
+            : { obsidian: { conventions: { [ruleKey]: nextValue } } };
+        try {
+          const body = await apiJson(SETTINGS_API, { method: 'POST', body: patch });
+          if (!mounted.current) return;
+          applySettingsPayload(body.settings);
+          if (body.board !== null && typeof body.board === 'object') applyBoard(body.board);
+          await reloadVaults();
+          if (mounted.current) setNotice(t('obsidianSaved'));
+        } catch (actionError) {
+          if (mounted.current) setError(describeError(actionError));
+        } finally {
+          endAction();
+        }
+      };
+
+      const rescan = async () => {
+        if (!beginAction('rescan')) return;
+        try {
+          const board = await apiJson(API + '?refresh=1');
+          if (!mounted.current) return;
+          if (board !== null && typeof board === 'object') applyBoard(board);
+          setNotice(t('obsidianSaved'));
+        } catch (actionError) {
+          if (mounted.current) setError(describeError(actionError));
+        } finally {
+          endAction();
+        }
+      };
+
+      const autoDetectOn = rules !== null && rules.autoDetect === true;
+      const ruleNodes = OBSIDIAN_RULE_DEFS.map((def) => {
+        const checked = def.readonly === true ? true : rules !== null && rules[def.key] === true;
+        return h(
+          'div',
+          { key: def.key, className: 'ls-obs-rule' },
+          def.readonly === true
+            ? h('span', { className: 'ls-obs-checkbox', 'aria-hidden': 'true' }, h(CheckIcon, { mode: 'done' }))
+            : h(
+                'button',
+                {
+                  type: 'button',
+                  role: 'switch',
+                  className: 'ls-obs-toggle',
+                  'aria-checked': checked ? 'true' : 'false',
+                  title: t(def.labelKey),
+                  'aria-label': t(def.labelKey),
+                  disabled: pendingKey !== null,
+                  onClick: () => toggleRule(def.key),
+                },
+                h('span', { className: 'ls-obs-toggle__knob', 'aria-hidden': 'true' }),
+              ),
+          h(
+            'span',
+            { className: 'ls-obs-rule__main' },
+            h('span', { className: 'ls-obs-rule__label' }, t(def.labelKey)),
+            h('span', { className: 'ls-obs-rule__hint' }, t(def.hintKey)),
+          ),
+          def.readonly === true ? h('span', { className: 'ls-obs-readonly' }, t('obsidianReadonly')) : null,
+        );
+      });
+
+      return h(
+        'section',
+        { className: 'ls-obs-card', 'aria-label': t('obsidianCardTitle') },
+        h(
+          'div',
+          { className: 'ls-obs-head' },
+          h(
+            'div',
+            { className: 'ls-obs-head__main' },
+            h(
+              'div',
+              { className: 'ls-obs-title' },
+              h(
+                'span',
+                { className: 'ls-obs-icon', 'aria-hidden': 'true' },
+                h(
+                  'svg',
+                  { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+                  h('path', {
+                    d: 'M2.2 4.4h4l1.2 1.4h6.4v7.8H2.2z',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.3,
+                    strokeLinejoin: 'round',
+                  }),
+                  h('path', {
+                    d: 'M5.5 8.4h5M8 6v4.8',
+                    stroke: 'currentColor',
+                    strokeWidth: 1.3,
+                    strokeLinecap: 'round',
+                  }),
+                ),
+              ),
+              h('span', null, t('obsidianCardTitle')),
+            ),
+            h(
+              'div',
+              { className: 'ls-obs-sub' },
+              t('obsidianCardHint') +
+                ' \u00b7 ' +
+                t('obsidianAutoDetect') +
+                ': ' +
+                (autoDetectOn ? t('obsidianAutoDetectOn') : t('obsidianAutoDetectOff')),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ls-obs-actions' },
+            notice !== null ? h('span', { className: 'ls-obs-notice' }, notice) : null,
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ls-obs-btn',
+                disabled: pendingKey !== null,
+                onClick: rescan,
+              },
+              pendingKey === 'rescan' ? t('obsidianRescanning') : t('obsidianRescan'),
+            ),
+          ),
+        ),
+        error !== null
+          ? h(
+              'div',
+              { className: 'ls-obs-error' },
+              h('span', null, t('obsidianError') + ': ' + error),
+              h('button', { type: 'button', className: 'ls-obs-btn', onClick: load }, t('obsidianRetry')),
+            )
+          : null,
+        loading && rules === null
+          ? h('div', { className: 'ls-obs-empty' }, t('obsidianLoading'))
+          : h(
+              'div',
+              null,
+              h(
+                'div',
+                { className: 'ls-obs-section' },
+                h(
+                  'div',
+                  { className: 'ls-obs-section__title' },
+                  h('span', null, t('obsidianVaults')),
+                  h('span', { className: 'ls-obs-badge' }, String(vaults.length)),
+                ),
+                vaults.length === 0
+                  ? h('div', { className: 'ls-obs-empty' }, t('obsidianVaultsEmpty'))
+                  : vaults.map((vault) =>
+                      h(
+                        'div',
+                        { key: vault.path, className: 'ls-obs-row' },
+                        h(
+                          'div',
+                          { className: 'ls-obs-row__main' },
+                          h(
+                            'span',
+                            { className: 'ls-obs-name' },
+                            typeof vault.name === 'string' && vault.name !== ''
+                              ? vault.name
+                              : baseName(vault.path) || vault.path,
+                          ),
+                          h('span', { className: 'ls-obs-path', title: vault.path }, shortenPath(vault.path)),
+                          h(
+                            'span',
+                            { className: 'ls-obs-meta' },
+                            String(toCount(vault.noteCount)) + ' ' + t('obsidianNotes'),
+                          ),
+                        ),
+                        h(
+                          'div',
+                          { className: 'ls-obs-actions' },
+                          vault.attached === true
+                            ? h('span', { className: 'ls-obs-badge ls-obs-badge--ok' }, t('obsidianAttached'))
+                            : h(
+                                'button',
+                                {
+                                  type: 'button',
+                                  className: 'ls-obs-btn ls-obs-btn--primary',
+                                  disabled: pendingKey !== null,
+                                  onClick: () => attachVault(vault),
+                                },
+                                t('obsidianAttach'),
+                              ),
+                        ),
+                      ),
+                    ),
+              ),
+              h(
+                'div',
+                { className: 'ls-obs-section' },
+                h(
+                  'div',
+                  { className: 'ls-obs-section__title' },
+                  h('span', null, t('obsidianRoots')),
+                  h('span', { className: 'ls-obs-badge' }, String(roots.length)),
+                ),
+                roots.length === 0
+                  ? h('div', { className: 'ls-obs-empty' }, t('obsidianRootsEmpty'))
+                  : roots.map((root, index) =>
+                      h(
+                        'div',
+                        {
+                          key: typeof root.id === 'string' ? root.id : 'root-' + index,
+                          className: 'ls-obs-row',
+                        },
+                        h(
+                          'div',
+                          { className: 'ls-obs-row__main' },
+                          h(
+                            'span',
+                            { className: 'ls-obs-name' },
+                            typeof root.label === 'string' && root.label !== ''
+                              ? root.label
+                              : baseName(root.path) || String(root.path ?? ''),
+                          ),
+                          h(
+                            'span',
+                            { className: 'ls-obs-path', title: typeof root.path === 'string' ? root.path : '' },
+                            shortenPath(root.path),
+                          ),
+                        ),
+                        h(
+                          'div',
+                          { className: 'ls-obs-actions' },
+                          h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'ls-obs-btn',
+                              disabled: pendingKey !== null,
+                              onClick: () => removeRoot(root),
+                            },
+                            t('obsidianRemove'),
+                          ),
+                        ),
+                      ),
+                    ),
+              ),
+              h(
+                'div',
+                { className: 'ls-obs-section' },
+                h('div', { className: 'ls-obs-section__title' }, h('span', null, t('obsidianRules'))),
+                h('div', { className: 'ls-obs-rules' }, ruleNodes),
+              ),
+            ),
+      );
+    }
+
     // -- data loading ------------------------------------------------------------
 
     /** Fetch the snapshot, with explicit loading/refresh/error/stale states. */
@@ -3037,6 +3587,7 @@ window.__ModuleLoader__.load({
           hubOffline ? h(HubOfflineBanner, { t, hub }) : null,
           stale !== null ? h(StaleBanner, { t, error: stale }) : null,
           h(StatsBar, { t, stats, completed }),
+          h(ObsidianSourceCard, { t, applyBoard }),
           h(Toolbar, {
             t,
             query,

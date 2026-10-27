@@ -107,7 +107,7 @@ export function detectVaults({ searchRoots, maxDepth = 4, limit = 20, signal } =
 
 1. **tag 行**（`tagLines`）：行内出现 `#todo` / `#task` / `#待办`（大小写不敏感，允许 `#todo/must`），且该行不是标题、不在代码围栏、不是 checkbox 行、正文非空。todo 文本 = 去掉行首 bullet/引用符后的整行，去掉标签本身；`line` 为真实行号；`writable:false`。
 2. **marker 行**（`markers`）：行内 `TODO:` / `待办：` / `待办:` / `FIXME:`（大小写不敏感）且不是 checkbox 行；文本取冒号后内容（为空则取整行）；`writable:false`。
-3. **frontmatter**（`frontmatter`）：文件 frontmatter 含 `todo: true`、`status: todo` 或 `tags:` 中含 `todo/task/待办` → 该文件所有 checkbox 行置信度提升为 1，并给文件加 `fileFlag:'todo'`（不改变行数）。
+3. **frontmatter**（`frontmatter`）：文件 frontmatter 含 `todo: true`、`status: todo` 或 `tags:` 中含 `todo/task/待办` → 该文件所有 checkbox 行置信度提升为 1，并给 todo 带 `fileFlag:'todo'`（不新增行）。实现说明：`discoveredBy:'frontmatter'` 因此不会产出，`stats.discovered.frontmatter` 为 0（保留桶计数口径）。
 4. **frontmatter-list**（`frontmatterList`）：frontmatter `todos:` 为 YAML 列表（`- text` 块或 `[a, b]` 行内）→ 每条合成一个 todo：`line:0`、`raw:''`、`relPath` 正常、`writable:false`、`id: md:<sourceId>:<relPath>:fm:<idx>`。
 5. **标题状态**（`headingStatus`）：最近标题匹配 `已完成|done` → done；`进行中|doing|in progress` → 该行 `headingStatus:'in_progress'`；`阻塞|blocked|卡住` → `headingStatus:'blocked'`；`待做|待办|todo|future|计划` → `headingStatus:'pending'`。输出字段 `headingStatus`（无匹配为 null）。它不改 done/cancelled 布尔，只做展示提示。
 6. **去重**：同一文件内 `checkbox` 优先于 `tag`/`marker`（同一行有 checkbox 则跳过 tag/marker）；frontmatter-list 与 checkbox 文本相同（归一化后）时不重复。
@@ -228,8 +228,9 @@ export function createYuanService({ dataDir, log, llm, getModel, config })
 
 - 对话：`yuan/chat.jsonl` 每行一条；启动加载尾部 200 条；面板展示最近 30 条。
 - 事实：`yuan/memory.jsonl`；`remember(text, source)` 去重（归一化后相同不重复）；prompt 取最近 `maxMemory` 条。
+- **模型从 `<<MEMORY>>` 提取的事实默认 `status:'pending'`，不进入后续 prompt**；用户确认（`/yuan/memory/accept`）后才变 active。手动「记住」为 active。
 - 「记住：xxx」「记住 xxx」命令：直接写 memory 并回执；不调用 LLM（省时）。
-- 记忆删除：`forget(id)` 追加一条 `{type:'forget', target:id}` 或重写文件（简单起见重写，原子写）。
+- 记忆删除：`forget(id)` 重写文件（原子写）。
 
 ### 4.4 提醒
 
@@ -256,8 +257,9 @@ export function createYuanService({ dataDir, log, llm, getModel, config })
 | POST | `/leo-status/api/yuan/chat` | `{message}` | `{ok, reply, chat, proposals, suggestions, signals, badge}` |
 | POST | `/leo-status/api/yuan/suggestion/accept` | `{id}` | `{ok, item, suggestions, board}` |
 | POST | `/leo-status/api/yuan/suggestion/dismiss` | `{id}` | `{ok, item, suggestions}` |
-| POST | `/leo-status/api/yuan/remember` | `{text}` | `{ok, memory}` |
-| POST | `/leo-status/api/yuan/memory/delete` | `{id}` | `{ok, memory}` |
+| POST | `/leo-status/api/yuan/remember` | `{text}` | `{ok, memory, memories}` |
+| POST | `/leo-status/api/yuan/memory/accept` | `{id}` | `{ok, memory, memories}`（pending → active） |
+| POST | `/leo-status/api/yuan/memory/delete` | `{id}` | `{ok, memories}` |
 | POST | `/leo-status/api/yuan/reminder` | `{text, at}` | `{ok, reminders, signals}` |
 | POST | `/leo-status/api/yuan/reminder/done` | `{id}` | `{ok, reminders, signals}` |
 | POST | `/leo-status/api/yuan/seen` | `{}` | `{ok, lastSeenAt}` |
@@ -297,6 +299,7 @@ export function createYuanService({ dataDir, log, llm, getModel, config })
     7. composer：单行输入 + 发送按钮；Enter 发送，Shift+Enter 换行；空文本禁用。
   - 所有文案走 locale（新增 zh/en 各 ≥45 key）；无硬编码中文（图标「源」除外）。
 - 看板页 `DashboardPage` 顶部增加「阿源建议」卡（同 store）：显示 pending 数、前 3 条、接受/忽略、打开面板按钮（打开后滚到 composer 的 dock）。
+- 看板页增加「数据源 · Obsidian 自动发现」卡：检测到的 vault（接入）、已接入 roots（移除）、规则开关（autoDetect/tagLines/markers/frontmatter/frontmatterList）、重新扫描。数据来自 `GET /obsidian/vaults`、`GET /settings`、`POST /settings`。
 
 ### 6.2 store（module 级）
 
