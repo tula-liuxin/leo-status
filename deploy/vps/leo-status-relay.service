@@ -1,0 +1,19 @@
+[Unit]
+Description=leo-status relay (TCP 172.18.0.1:18888 -> 127.0.0.1:18899)
+Documentation=file:///opt/leo-status/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/leo-status/forward.py
+Restart=always
+RestartSec=3
+User=root
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

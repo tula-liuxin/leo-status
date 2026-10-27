@@ -1,0 +1,8 @@
+node_modules/
+settings.json
+*.tgz
+data/
+
+__pycache__/
+*.pyc
+

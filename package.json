@@ -1,0 +1,51 @@
+{
+  "name": "leo-status",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Leo 状态看板：聚合多来源 TODO（Obsidian/DSH 会话），支持多设备加入中心、设备区分与简单密码认证。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "scan.js",
+    "settings.js",
+    "sync.js",
+    "hub.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.3"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "todo",
+    "status",
+    "obsidian",
+    "multi-device"
+  ],
+  "author": {
+    "name": "leo",
+    "url": "https://github.com/tula-liuxin"
+  },
+  "license": "MIT"
+}
