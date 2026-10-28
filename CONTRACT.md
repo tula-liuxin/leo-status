@@ -10,3 +10,5 @@
 - 历史命名：首条直接用户消息后设置 阿源 · <话题>，不在创建空会话时强制统一命名。
 - 普通会话不应获得阿源身份。停用阿源不得替换核心 AgentLoop 或 ToolRuntime。
 - 原 CONTRACT-LEGACY-V1.md 和 CONTRACT-V*.md 为历史材料，不再代表当前文件分工或只读限制。
+
+- leoHub.registerRoute(prefix, handler) 返回幂等卸载函数；消费方必须将注册绑定到注入作用域的 effect，服务重建或停用时解除。

@@ -20,7 +20,7 @@ import { promises as fsp } from 'node:fs'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { aggregate, EMPTY_STATS, detectVaults } from './scan.js'
-import { createHubStore, buildBoard, createHubHandler, startHubServer } from './hub.js'
+import { createHubStore, buildBoard, createHubHandler, startHubServer, registerHubRoute } from './hub.js'
 import { joinHub, pushSnapshot, fetchBoard, platformId, normalizeHubUrl, requestHubYuan, requestHubBoard } from './sync.js'
 import { applyTodoAction, EditError } from './edit.js'
 import { createSuggestionStore } from './suggest.js'
@@ -1098,7 +1098,7 @@ export function apply(ctx, config) {
     isDevice: () => isDevice(),
     baseUrl: () => settings.device.hubUrl,
     remoteCall: (route, body) => remoteYuan(route, body),
-    registerRoute: (prefix, handler) => { hubRoutes.push({ prefix, handler }) },
+    registerRoute: (prefix, handler) => registerHubRoute(hubRoutes, prefix, handler),
   }
   ctx.provide('leoHub', leoHub)
 

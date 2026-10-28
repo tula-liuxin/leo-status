@@ -1283,3 +1283,10 @@ export async function startHubServer(opts) {
   log('[hub] listening on', url);
   return { url, close, server };
 }
+
+/** Register an extension route and remove exactly that registration on disposal. */
+export function registerHubRoute(routes, prefix, handler) {
+  const entry = { prefix, handler }
+  routes.push(entry)
+  return () => { const index = routes.indexOf(entry); if (index >= 0) routes.splice(index, 1) }
+}
