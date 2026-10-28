@@ -27,6 +27,7 @@ import { createSuggestionStore } from './suggest.js'
 import { createYuanService } from './yuan.js'
 import { createYuanAgentRuntime } from './yuan-agent.js'
 import { createMemoryCore } from './memory-core.js'
+import { createHubMemory } from './hub-memory.js'
 import { createSessionIntake, discoverIntake, intakeId } from './intake.js'
 import {
   resolveDataDir,
@@ -41,7 +42,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.7.0'
+export const PLUGIN_VERSION = '0.8.0'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -321,8 +322,13 @@ export function apply(ctx, config) {
       await suggestionStore.load()
       // 阿源的完整能力：真实 DSH Agent 会话（工具 + 与用户相同的最高权限）。
       // 失败时 yuanService 会退回直接模型调用，面板不会挂。
+      // 设备模式下阿源仍在本机运行（会话/工具/文件属于这台设备），只有记忆走中心：
+      // 这样「阿源本身」跨设备共享，「各自环境」互不干扰。
       try {
-        yuanAgent = !isDevice() && settings.yuan.enabled ? createYuanAgentRuntime({ ctx, dataDir, log, getModel: yuanGetModel, memory: memoryCore,
+        const hubMemory = isDevice() && settings.yuan.enabled
+          ? createHubMemory({ hubUrl: settings.device.hubUrl, password: settings.device.password, log })
+          : null
+        yuanAgent = settings.yuan.enabled ? createYuanAgentRuntime({ ctx, dataDir, log, getModel: yuanGetModel, memory: isDevice() ? hubMemory : memoryCore,
           getContext: async () => {
             const board = await getBoard(false)
             return JSON.stringify({ board: { stats: board.stats, pending: board.suggestions?.length || 0 }, note: '需要具体任务时调用 leo_status list；不要把候选当成已确认任务。' })
@@ -1129,7 +1135,8 @@ export function apply(ctx, config) {
     await initV042()
     await migrateStaleSessionSuggestions()
     // 预热阿源的真实 Agent 会话（失败会写 yuan/agent-error.json，面板仍可用直接模型降级）。
-    if (yuanAgent !== null) {
+    // 设备模式不预热：只有真的打开阿源时才在这台设备上创建会话。
+    if (yuanAgent !== null && !isDevice()) {
       yuanAgent.ensure().catch((error) => log('yuan-agent warm failed:', describeError(error)))
     }
     if (isHub()) {
@@ -1350,7 +1357,7 @@ export function apply(ctx, config) {
           agentStatus = { enabled: true, ready: false, sessionId: null, error: describeError(error) }
         }
       }
-      return { ok: true, ...payload, suggestions, agent: agentStatus,
+      return { ok: true, ...payload, suggestions, agent: agentStatus, mode: settings.mode,
         sessions: await yuanAgent?.sessions() || [], context: yuanAgent?.context(), memoryStatus: memoryCore?.status }
     }
 
@@ -1547,6 +1554,7 @@ export function apply(ctx, config) {
         sessions: async () => ({ ok: true, sessions: await yuanAgent?.sessions() || [] }),
         'memory/query': (value) => ({ ok: true, items: value.id ? [memoryCore?.detail(value.id)].filter(Boolean) : value.query ? memoryCore?.search(value.query, { limit: 30, budget: 10000 }) || [] : memoryCore?.list().slice(0, 100) || [], status: memoryCore?.status }),
         'memory/change': async (value) => ({ ok: true, item: await memoryCore?.change(value.id, value.action, value.text) }),
+        'memory/capture': async (value) => ({ ok: true, item: await memoryCore?.capture(value) }),
         activity: () => ({ ok: true, activity: yuanAgent?.activity() || { running: false, text: '', tools: [] } }),
         stop: () => yuanAgent?.stop() || { ok: true },
         state: yuanState, signals: yuanSignals, chat: yuanChat,
@@ -1576,8 +1584,30 @@ export function apply(ctx, config) {
           const route = path.slice('/leo-status/api/yuan/'.length)
           const read = ['state', 'signals', 'activity', 'sessions'].includes(route)
           if (req.method !== (read ? 'GET' : 'POST')) { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
-          try { sendJson(res, 200, await remoteYuan(route, read ? undefined : await readJsonBody(req))) }
-          catch (error) { sendJson(res, 503, { ok: false, error: `中心阿源暂不可用：${describeError(error)}` }) }
+          const body = read ? undefined : await readJsonBody(req)
+          // 阿源在这台设备上运行：会话、模型、工具和文件都是本机的，
+          // 记忆、提醒、建议和未读信号仍以中心那份为唯一副本。
+          const localRoutes = ['open', 'sessions', 'chat', 'activity', 'stop']
+          if (localRoutes.includes(route) && (route === 'sessions' || yuanAgent !== null)) {
+            try { sendJson(res, 200, { ...(await sharedYuan(route, body ?? {})), mode: settings.mode }) }
+            catch (error) { sendJson(res, 503, { ok: false, error: `本机阿源暂不可用：${describeError(error)}` }) }
+            return
+          }
+          try {
+            if (route === 'state') {
+              const localState = await yuanState()
+              const hub = await remoteYuan('state', undefined)
+              const shared = {}
+              for (const key of ['suggestions', 'reminders', 'memory', 'signals', 'badge', 'unread', 'memoryStatus', 'lastSeenAt']) {
+                if (hub !== null && hub !== undefined && hub[key] !== undefined) shared[key] = hub[key]
+              }
+              sendJson(res, 200, { ...localState, ...shared, mode: settings.mode })
+              return
+            }
+            sendJson(res, 200, { ...(await remoteYuan(route, body)), mode: settings.mode })
+          } catch (error) {
+            sendJson(res, 503, { ok: false, error: `中心阿源暂不可用：${describeError(error)}` })
+          }
           return
         }
 

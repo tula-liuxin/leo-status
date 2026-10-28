@@ -199,7 +199,7 @@ export function createYuanAgentRuntime({ ctx, dataDir, log = () => {}, getModel 
     if (!direct.length) return decision
     const query = direct.map((m) => textOfBlocks(m.content)).join('\n').slice(0, 4000)
     const origin = origins.get(current.id)
-    const recalled = memory?.search(query, { excludeMessageId: direct.at(-1)?.id }) || []
+    const recalled = (await memory?.search?.(query, { excludeMessageId: direct.at(-1)?.id })) || []
     let context = ''
     try { context = await getContext(query) } catch (e) { log('yuan context:', e.message) }
     const content = [{ type: 'text', text: [

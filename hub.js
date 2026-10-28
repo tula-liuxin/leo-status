@@ -1080,7 +1080,7 @@ export function createHubHandler(opts) {
       if (yuanRequest !== null && pathname.startsWith('/api/yuan/')) {
         const route = pathname.slice('/api/yuan/'.length);
         const reads = new Set(['state', 'signals', 'activity', 'sessions']);
-        const writes = new Set(['open', 'propose', 'memory/query', 'memory/change', 'chat', 'stop', 'suggestion/accept', 'suggestion/dismiss', 'remember', 'memory/delete', 'memory/accept', 'reminder', 'reminder/done', 'seen', 'todo/action']);
+        const writes = new Set(['open', 'propose', 'memory/query', 'memory/change', 'memory/capture', 'chat', 'stop', 'suggestion/accept', 'suggestion/dismiss', 'remember', 'memory/delete', 'memory/accept', 'reminder', 'reminder/done', 'seen', 'todo/action']);
         if (!reads.has(route) && !writes.has(route)) { sendJson(res, 404, { ok: false, error: 'not found' }); return; }
         if (method !== (reads.has(route) ? 'GET' : 'POST')) { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return; }
         const body = reads.has(route) ? { value: {} } : await readJsonBody(req, res);

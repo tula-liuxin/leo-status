@@ -665,7 +665,7 @@ window.__ModuleLoader__.load({
       if (options.newSession && floating.state.source && !options.origin) options = { ...options, origin: captureOrigin(floating.state.source) };
       const result = await apiJson('/leo-status/api/yuan/open', { method: 'POST', body: options });
       if (result.remote) throw new Error('阿源位于中心设备，请在设备中心切换到中心设备后打开原生会话');
-      yuan.set({ state: { ...(yuan.state || {}), sessions: result.sessions, context: result.context, contextSessionId: result.sessionId } });
+      yuan.set({ state: { ...(yuan.state || {}), sessions: result.sessions, context: result.context, contextSessionId: result.sessionId, mode: result.mode || null } });
       floating.set({ sessionId: result.sessionId, visible: true, ...(options.origin ? { source: options.origin } : {}) });
       return result;
     }
@@ -693,6 +693,10 @@ window.__ModuleLoader__.load({
     }
     function YuanFloatingPanel({ SessionProvider, renderSlot }) {
       const state = useFloating();
+      const store = useYuanStore();
+      const identity = store.state?.mode === 'hub' ? '中心设备 · 记忆在中心'
+        : store.state?.mode === 'device' ? '本机运行 · 记忆同步中心'
+        : '独立记忆 · 全权限';
       const [reference, setReference] = useState(null), [error, setError] = useState('');
       const [geometry, setGeometry] = useState(readFloatLayout), [wide, setWide] = useState(false), [, setViewport] = useState(0);
       const panel = useRef(null), drag = useRef(null), sizing = useRef(null), opener = useRef(null), previousSize = useRef(null);
@@ -731,7 +735,7 @@ window.__ModuleLoader__.load({
             e.currentTarget.setPointerCapture(e.pointerId);
           }, onPointerMove: e => { if (!drag.current) return; setGeometry(clampFloat({ ...layout, x: e.clientX - drag.current.dx, y: e.clientY - drag.current.dy })); },
           onPointerUp: () => { drag.current = null; }, onLostPointerCapture: () => { drag.current = null; } },
-            h('div', { className: 'ls-yuan-float-identity' }, h(RobotIcon), h('strong', null, '阿源'), h('span', null, '独立记忆 · 全权限')),
+            h('div', { className: 'ls-yuan-float-identity' }, h(RobotIcon), h('strong', null, '阿源'), h('span', null, identity)),
             h('button', { className: 'ls-yuan-btn', onPointerDown: e => { e.preventDefault(); }, onClick: updateOrigin, title: '携带当前页面、选中文字或代码' }, '更新位置'),
             h('button', { className: 'ls-yuan-btn', onClick: () => { setGeometry(clampFloat(null)); setWide(false); }, title: '重置浮框大小和位置' }, '重置'),
             h('button', { className: 'ls-yuan-btn', onClick: () => { if (!wide) { previousSize.current = geometry; setGeometry(clampFloat({ width: 940, height: 850 })); } else setGeometry(previousSize.current || clampFloat(null)); setWide(!wide); }, 'aria-label': wide ? '缩小浮框' : '放大浮框' }, wide ? '↙' : '↗'),

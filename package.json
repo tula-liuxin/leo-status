@@ -1,6 +1,6 @@
 {
   "name": "leo-status",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Leo 状态看板与阿源：笔记和真实用户承诺先确认再追踪，多设备共用建议、对话与记忆。",
@@ -29,9 +29,11 @@
     "intake.js",
     "CONTRACT-V5.md",
     "memory-core.js",
+    "hub-memory.js",
     "yuan-context.js",
     "CONTRACT-V6.md",
     "CONTRACT-V7.md",
+    "CONTRACT-V8.md",
     "THIRD-PARTY-NOTICES.txt"
   ],
   "dsh": {
