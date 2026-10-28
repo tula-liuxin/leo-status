@@ -1515,7 +1515,11 @@ async function runAggregate(config, now, startedAt) {
 
     const result = await scanMarkdownRoot(root, config, now, budget, cacheHandle);
     sources.push(result.source);
-    for (const todo of result.todos) todos.push(todo);
+    // An Obsidian vault is recognizable by its own .obsidian directory.
+    // Apply after reading the scan cache so existing cached rows gain the marker too.
+    let obsidianVault = false;
+    try { obsidianVault = (await fsp.stat(path.join(root.path, '.obsidian'))).isDirectory(); } catch {}
+    for (const todo of result.todos) todos.push({ ...todo, obsidianVault });
 
     if (scanCache && cacheHandle) {
       cacheStats.hits += cacheHandle.hits;

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Leo Status",
-    "description": "One read-only board aggregating TODO items from every device's Obsidian notes and DSH sessions. This machine can be the hub; other devices install the same plugin and join with a password, and the board merges and distinguishes devices."
+    "description": "Discover personal commitments from notes and real user messages, review with Yuan, then track accepted tasks. Devices share suggestions, chat, memory and reminders through one center."
   }
 }

@@ -166,11 +166,11 @@ test('agentChat：优先走真实 agent，工具卡随消息持久化', async ()
   assert.deepEqual(assistant.proposals, ['给周报补数据'])
 })
 
-test('agentChat 抛错时退回直接模型/fallback，不挂', async () => {
+test('agentChat 失败明确报错，不用无工具模型冒充阿源', async () => {
   const dir = await tempDir()
   const service = createYuanService({
     dataDir: dir,
-    llm: null,
+    llm: { stream() { throw new Error('must not fall back to direct model') } },
     agentChat: async () => {
       throw new Error('agent unavailable')
     },
@@ -178,7 +178,7 @@ test('agentChat 抛错时退回直接模型/fallback，不挂', async () => {
   })
   const result = await service.chat('今天做什么', { board: boardFixture(), suggestions: [] })
   assert.equal(result.usedAgent, false)
-  assert.ok(result.reply.includes('看板'))
+  assert.ok(result.reply.includes('agent unavailable'))
   assert.equal(result.tools.length, 0)
 })
 

@@ -507,7 +507,9 @@ export function createSuggestionStore(dataDir) {
   function schedulePersist() {
     const payload = { version: SUGGESTION_VERSION, items: items.map((item) => ({ ...item })) };
     const task = () => writeJsonAtomic(file, payload);
-    writeChain = writeChain.then(task, task).catch(() => {});
+    writeChain = writeChain.catch(() => {}).then(task);
+    // Keep the rejection observable to flush(), without an unhandled-rejection crash.
+    writeChain.catch(() => {});
     return writeChain;
   }
 
@@ -548,7 +550,7 @@ export function createSuggestionStore(dataDir) {
 
       if (existing !== undefined) {
         if (existing.status === 'pending') {
-          for (const key of ['text', 'normalized', 'sessionId', 'sessionTitle', 'project', 'kind', 'score', 'bucket']) {
+          for (const key of ['text', 'normalized', 'sessionId', 'sessionTitle', 'project', 'kind', 'score', 'bucket', 'origin', 'due', 'scheduled', 'priority', 'tags', 'links']) {
             if (raw[key] !== undefined && existing[key] !== raw[key]) {
               existing[key] = raw[key];
               changed = true;
@@ -590,11 +592,28 @@ export function createSuggestionStore(dataDir) {
   }
 
   function accept(id) {
+    const existing = items.find((entry) => entry.id === id);
+    if (!existing || (existing.status !== 'pending' && existing.status !== 'accepted')) return null;
     return transition(id, 'accepted', 'acceptedAt');
   }
 
   function dismiss(id) {
+    if (!items.some((entry) => entry.id === id && entry.status === 'pending')) return null;
     return transition(id, 'dismissed', 'dismissedAt');
+  }
+
+  function act(id, action) {
+    const item = items.find((entry) => entry.id === id && entry.status === 'accepted');
+    if (!item) return null;
+    if (action === 'delete') { remove(id); return cloneItem(item); }
+    if (!['done', 'undone', 'cancel', 'restore'].includes(action)) return null;
+    if (action === 'done') { item.done = true; item.cancelled = false; }
+    if (action === 'undone') item.done = false;
+    if (action === 'cancel') { item.cancelled = true; item.done = false; }
+    if (action === 'restore') item.cancelled = false;
+    item.updatedAt = new Date().toISOString();
+    schedulePersist();
+    return cloneItem(item);
   }
 
   /** 软删除（status='removed'），保证 mergeDerived 不会把用户删掉的建议再带回来。 */
@@ -622,6 +641,7 @@ export function createSuggestionStore(dataDir) {
     accept,
     dismiss,
     remove,
+    act,
     flush,
   };
 }

@@ -41,6 +41,8 @@ const TODO_WHITELIST = [
   'writable',
   'confidence',
   'headingStatus',
+  'evidence',
+  'obsidianVault',
 ]
 
 function trimBase(baseUrl) {
@@ -106,6 +108,17 @@ export function normalizeHubUrl(hubUrl) {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('中心地址必须是 http/https')
   return text
+}
+
+/** Devices use one central inbox/chat/memory; network failures never create a second copy. */
+export async function requestHubYuan({ hubUrl, password, route, body }) {
+  const reads = new Set(['state', 'signals', 'activity'])
+  const data = await request(hubUrl, `/api/yuan/${route}`, {
+    password, method: reads.has(route) ? 'GET' : 'POST', body: reads.has(route) ? undefined : body,
+    timeoutMs: route === 'chat' ? 240000 : 20000,
+  })
+  if (data?.ok !== true) throw new Error(data?.error || '中心阿源暂不可用')
+  return data
 }
 
 /** 把本地快照裁成可上报的白名单形状。 */

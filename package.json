@@ -1,9 +1,9 @@
 {
   "name": "leo-status",
-  "version": "0.4.6",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
-  "description": "Leo 状态看板：自动发现 Obsidian/DSH 会话 TODO，多设备加入中心与简单密码认证；新增管家「阿源」——会话建议需 accept、对话记忆、红点提醒。",
+  "description": "Leo 状态看板与阿源：笔记和真实用户承诺先确认再追踪，多设备共用建议、对话与记忆。",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -25,18 +25,14 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
-    "CONTRACT-V4.md"
-  ],
-  "keywords": [
-    "deepseek-harness",
-    "dsh",
-    "plugin",
-    "todo",
-    "status",
-    "obsidian",
-    "multi-device",
-    "yuan",
-    "agent"
+    "CONTRACT-V4.md",
+    "intake.js",
+    "CONTRACT-V5.md",
+    "memory-core.js",
+    "yuan-context.js",
+    "CONTRACT-V6.md",
+    "CONTRACT-V7.md",
+    "THIRD-PARTY-NOTICES.txt"
   ],
   "dsh": {
     "bundle": {
@@ -57,7 +53,9 @@
     "todo",
     "status",
     "obsidian",
-    "multi-device"
+    "multi-device",
+    "yuan",
+    "agent"
   ],
   "author": {
     "name": "leo",
@@ -65,4 +63,3 @@
   },
   "license": "MIT"
 }
-

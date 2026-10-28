@@ -67,6 +67,7 @@ function sanitizeTodo(todo, index) {
     cancelled: src.cancelled === true,
     sourceId: typeof src.sourceId === 'string' ? src.sourceId : null,
     sourceLabel: typeof src.sourceLabel === 'string' ? src.sourceLabel : null,
+    obsidianVault: src.obsidianVault === true,
     file: typeof src.file === 'string' ? src.file : null,
     relPath: typeof src.relPath === 'string' ? src.relPath : null,
     line: Number.isInteger(src.line) ? src.line : null,
@@ -96,6 +97,9 @@ function sanitizeTodo(todo, index) {
           ? 1
           : 1,
     headingStatus: typeof src.headingStatus === 'string' ? src.headingStatus : null,
+    evidence: src.evidence?.kind === 'user-message' && src.evidence?.sourceKind === 'user'
+      ? { kind: 'user-message', sourceKind: 'user', seq: Number(src.evidence.seq) || 0,
+          quote: String(src.evidence.quote || '').slice(0, 600) } : null,
   };
 }
 
@@ -833,6 +837,7 @@ export function createHubHandler(opts) {
   const password = typeof options.password === 'string' ? options.password : '';
   const boardProvider = typeof options.boardProvider === 'function' ? options.boardProvider : null;
   const yuanChat = typeof options.yuanChat === 'function' ? options.yuanChat : null;
+  const yuanRequest = typeof options.yuanRequest === 'function' ? options.yuanRequest : null;
   const log = typeof options.log === 'function' ? options.log : () => {};
   const syncIntervalMs =
     typeof options.syncIntervalMs === 'number' &&
@@ -1070,6 +1075,18 @@ export function createHubHandler(opts) {
           return;
         }
         await handleBoard(req, res);
+        return;
+      }
+      if (yuanRequest !== null && pathname.startsWith('/api/yuan/')) {
+        const route = pathname.slice('/api/yuan/'.length);
+        const reads = new Set(['state', 'signals', 'activity', 'sessions']);
+        const writes = new Set(['open', 'propose', 'memory/query', 'memory/change', 'chat', 'stop', 'suggestion/accept', 'suggestion/dismiss', 'remember', 'memory/delete', 'memory/accept', 'reminder', 'reminder/done', 'seen', 'todo/action']);
+        if (!reads.has(route) && !writes.has(route)) { sendJson(res, 404, { ok: false, error: 'not found' }); return; }
+        if (method !== (reads.has(route) ? 'GET' : 'POST')) { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return; }
+        const body = reads.has(route) ? { value: {} } : await readJsonBody(req, res);
+        if (body === null) return;
+        try { sendJson(res, 200, await yuanRequest(route, body.value)); }
+        catch (error) { sendJson(res, 400, { ok: false, error: String(error?.message || error) }); }
         return;
       }
       if (yuanChat !== null && pathname === '/api/yuan/chat') {
