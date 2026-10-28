@@ -678,6 +678,19 @@ window.__ModuleLoader__.load({
         y: Math.max(40, Math.min(Number.isFinite(layout?.y) ? layout.y : innerHeight - height - 24, innerHeight - height - 8)) };
     }
     function readFloatLayout() { try { return clampFloat(JSON.parse(localStorage.getItem(FLOAT_LAYOUT_KEY))); } catch { return clampFloat(null); } }
+    /** Collapsed launcher keeps its own absolute position; null means the CSS default corner. */
+    const BUBBLE_POSITION_KEY = 'leo-status.yuan.bubble-position.v1';
+    function readBubblePosition() {
+      try {
+        const value = JSON.parse(localStorage.getItem(BUBBLE_POSITION_KEY));
+        return Number.isFinite(value?.x) && Number.isFinite(value?.y) ? clampBubble(value) : null;
+      } catch { return null; }
+    }
+    function clampBubble(position) {
+      const w = Math.max(48, Number(position?.w) || 96), h = Math.max(32, Number(position?.h) || 44);
+      return { x: Math.max(8, Math.min(Number(position?.x) || 0, innerWidth - w - 8)),
+        y: Math.max(8, Math.min(Number(position?.y) || 0, innerHeight - h - 8)), w, h };
+    }
     function YuanChatView(props) {
       const [view, setView] = useState(() => { try { return localStorage.getItem('leo-status.yuan.float-view') === 'trajectory' ? 'trajectory' : 'chat'; } catch { return 'chat'; } });
       return h(React.Fragment, null,
@@ -699,7 +712,9 @@ window.__ModuleLoader__.load({
         : '独立记忆 · 全权限';
       const [reference, setReference] = useState(null), [error, setError] = useState('');
       const [geometry, setGeometry] = useState(readFloatLayout), [wide, setWide] = useState(false), [, setViewport] = useState(0);
+      const [bubblePos, setBubblePos] = useState(readBubblePosition);
       const panel = useRef(null), drag = useRef(null), sizing = useRef(null), opener = useRef(null), previousSize = useRef(null);
+      const bubbleDrag = useRef(null), suppressBubbleClick = useRef(false);
       const layout = clampFloat(geometry);
       useEffect(() => { try { localStorage.setItem(FLOAT_LAYOUT_KEY, JSON.stringify(geometry)); } catch {} }, [geometry]);
       useEffect(() => {
@@ -715,9 +730,10 @@ window.__ModuleLoader__.load({
         else opener.current?.focus?.();
       }, [state.visible]);
       useEffect(() => {
-        const clamp = () => setViewport(n => n + 1);
-        window.addEventListener('resize', clamp); return () => window.removeEventListener('resize', clamp);
+        const onResize = () => { setViewport(n => n + 1); setBubblePos(current => (current ? clampBubble(current) : current)); };
+        window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize);
       }, []);
+      useEffect(() => { if (!bubblePos) return; try { localStorage.setItem(BUBBLE_POSITION_KEY, JSON.stringify(bubblePos)); } catch {} }, [bubblePos]);
       if (!state.sessionId) return null;
       const updateOrigin = () => {
         const main = [...document.querySelectorAll('[data-conversation-session]')].find(n => !n.closest('.ls-yuan-float'));
@@ -725,16 +741,42 @@ window.__ModuleLoader__.load({
         void openYuan({ sessionId: state.sessionId, origin }).catch(e => setError(e.message));
       };
       return h(React.Fragment, null,
-        !state.visible ? h('button', { className: 'ls-yuan-bubble', title: '展开阿源', onClick: () => floating.set({ visible: true }) }, h(RobotIcon), '阿源') : null,
+        !state.visible ? h('button', {
+          type: 'button', className: 'ls-yuan-bubble', title: '展开阿源（可拖动）', 'aria-label': '展开阿源',
+          style: bubblePos ? { left: bubblePos.x, top: bubblePos.y, right: 'auto', bottom: 'auto' } : undefined,
+          onPointerDown: e => {
+            if (e.button !== 0) return;
+            const rect = e.currentTarget.getBoundingClientRect();
+            bubbleDrag.current = { startX: e.clientX, startY: e.clientY, dx: e.clientX - rect.left, dy: e.clientY - rect.top, w: rect.width, h: rect.height, moved: false };
+            try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+          },
+          onPointerMove: e => {
+            const start = bubbleDrag.current;
+            if (!start) return;
+            if (!start.moved && Math.hypot(e.clientX - start.startX, e.clientY - start.startY) < 4) return;
+            start.moved = true;
+            setBubblePos(clampBubble({ x: e.clientX - start.dx, y: e.clientY - start.dy, w: start.w, h: start.h }));
+          },
+          onPointerUp: () => {
+            if (bubbleDrag.current?.moved) { suppressBubbleClick.current = true; setTimeout(() => { suppressBubbleClick.current = false; }, 0); }
+            bubbleDrag.current = null;
+          },
+          onPointerCancel: () => { bubbleDrag.current = null; },
+          onLostPointerCapture: () => { bubbleDrag.current = null; },
+          onClick: () => {
+            if (suppressBubbleClick.current) { suppressBubbleClick.current = false; return; }
+            floating.set({ visible: true });
+          },
+        }, h(RobotIcon), '阿源') : null,
         h('section', { ref: panel, className: 'ls-yuan-float' + (wide ? ' ls-yuan-float-wide' : ''), role: 'dialog', 'aria-modal': false, 'aria-label': '阿源浮框',
           style: { display: state.visible ? 'flex' : 'none', left: layout.x, top: layout.y, width: layout.width, height: layout.height, right: 'auto', bottom: 'auto', maxWidth: 'none', maxHeight: 'none' },
           onKeyDown: e => { if (e.key === 'Escape' && !e.defaultPrevented) { floating.set({ visible: false }); e.stopPropagation(); } } },
           h('header', { className: 'ls-yuan-float-head', onPointerDown: e => {
-            if (e.target.closest('button')) return;
+            if (e.button !== 0 || e.target.closest('button')) return;
             const r = panel.current.getBoundingClientRect(); drag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-            e.currentTarget.setPointerCapture(e.pointerId);
+            try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
           }, onPointerMove: e => { if (!drag.current) return; setGeometry(clampFloat({ ...layout, x: e.clientX - drag.current.dx, y: e.clientY - drag.current.dy })); },
-          onPointerUp: () => { drag.current = null; }, onLostPointerCapture: () => { drag.current = null; } },
+          onPointerUp: () => { drag.current = null; }, onPointerCancel: () => { drag.current = null; }, onLostPointerCapture: () => { drag.current = null; } },
             h('div', { className: 'ls-yuan-float-identity' }, h(RobotIcon), h('strong', null, '阿源'), h('span', null, identity)),
             h('button', { className: 'ls-yuan-btn', onPointerDown: e => { e.preventDefault(); }, onClick: updateOrigin, title: '携带当前页面、选中文字或代码' }, '更新位置'),
             h('button', { className: 'ls-yuan-btn', onClick: () => { setGeometry(clampFloat(null)); setWide(false); }, title: '重置浮框大小和位置' }, '重置'),
@@ -2108,7 +2150,9 @@ window.__ModuleLoader__.load({
 .ls-yuan-float-body{flex:1;min-height:0;display:flex;flex-direction:column;position:relative;overflow:hidden}
 .ls-yuan-float-body>[data-conversation-content]{flex:1;min-height:0;--dsh-chat-user-width:100%;--dsh-chat-content-padding:16px}
 .ls-yuan-float .ls-native-popover{position:absolute;top:92px;right:12px;max-height:calc(100% - 110px);max-width:calc(100% - 24px);z-index:10}
-.ls-yuan-bubble{position:fixed;right:24px;bottom:24px;pointer-events:auto;display:flex;align-items:center;gap:8px;padding:12px 16px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:0 6px 24px #0002;cursor:pointer}
+.ls-yuan-bubble{position:fixed;right:24px;bottom:24px;pointer-events:auto;display:flex;align-items:center;gap:8px;padding:12px 16px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:0 6px 24px #0002;cursor:grab;touch-action:none;user-select:none;z-index:120}
+.ls-yuan-bubble:active{cursor:grabbing}
+.ls-yuan-float-head:active{cursor:grabbing}
 @media(max-width:640px){.ls-yuan-float{right:8px;bottom:8px;max-width:calc(100vw - 16px);height:75vh;max-height:calc(100vh - 48px)}.ls-yuan-float-identity span{display:none}.ls-yuan-float-head{padding:10px}.ls-yuan-float-head .ls-yuan-btn{padding:3px 6px}.ls-yuan-bubble{right:12px;bottom:12px}}
 `;
 
