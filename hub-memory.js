@@ -68,6 +68,22 @@ export function createHubMemory({ hubUrl, password, log = () => {} }) {
       const data = await call('memory/change', { id, action, text })
       return data.item ?? null
     },
+    /** 阿源的自我状态（兴趣/情绪/偏好）写入中心那一份记忆。 */
+    async note({ kind, text, source } = {}) {
+      const data = await call('memory/note', { kind, text, source })
+      return data.item ?? null
+    },
+    /** 最近的记忆条目（用于状态摘要）。 */
+    async list({ limit = 40 } = {}) {
+      try {
+        const data = await call('memory/query', {})
+        return (Array.isArray(data.items) ? data.items : []).slice(0, limit)
+      } catch (error) {
+        status.lastError = error.message
+        log('hub memory list:', error.message)
+        return []
+      }
+    },
     /** 把本机阿源对话的证据写进中心记忆（中心自己做提炼与去重）。 */
     async capture(record) {
       try {

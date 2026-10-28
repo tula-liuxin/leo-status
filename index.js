@@ -28,6 +28,7 @@ import { createYuanService } from './yuan.js'
 import { createYuanAgentRuntime } from './yuan-agent.js'
 import { createMemoryCore } from './memory-core.js'
 import { createHubMemory } from './hub-memory.js'
+import { createSessionBrowser, createAyuanState, currentLocation, describeAyuanStatus } from './ayuan-state.js'
 import { createSessionIntake, discoverIntake, intakeId } from './intake.js'
 import {
   resolveDataDir,
@@ -42,7 +43,7 @@ export const name = 'leo-status'
 /** 不硬依赖任何服务：缺 webServer 时插件仍可加载，只是没有页面数据。 */
 export const inject = []
 
-export const PLUGIN_VERSION = '0.8.0'
+export const PLUGIN_VERSION = '0.9.0'
 
 const LOCAL_API = '/leo-status/api/todos'
 const JOIN_API = '/leo-status/api/join'
@@ -260,6 +261,10 @@ export function apply(ctx, config) {
   let agentDefaultModel = null
   let sharedYuan = null
   let memoryCore = null
+  /** 设备模式下的远端记忆适配器（阿源在本机运行，记忆在中心）。 */
+  let deviceMemory = null
+  /** 阿源状态：位置 / 情绪 / 兴趣 / 记忆摘要 / 任务 / 本机会话。 */
+  let ayuanState = null
   async function extractMemories(text) {
     if (!llmBridge.stream) return []
     const model = yuanGetModel()
@@ -277,6 +282,10 @@ export function apply(ctx, config) {
   }
   const sessionIntake = createSessionIntake({ getPersistence: () => {
     try { return ctx.get('sessionPersistence') } catch { return null }
+  }, log })
+  /** 只读浏览本机会话（阿源「看见」用户在这台设备上做什么）。 */
+  const sessionBrowser = createSessionBrowser({ getQuery: () => {
+    try { return ctx.get('sessionQuery') } catch { return null }
   }, log })
 
   /** llm 是动态注入的；用 getter 桥避免初始化顺序问题。 */
@@ -325,13 +334,24 @@ export function apply(ctx, config) {
       // 设备模式下阿源仍在本机运行（会话/工具/文件属于这台设备），只有记忆走中心：
       // 这样「阿源本身」跨设备共享，「各自环境」互不干扰。
       try {
-        const hubMemory = isDevice() && settings.yuan.enabled
+        deviceMemory = isDevice() && settings.yuan.enabled
           ? createHubMemory({ hubUrl: settings.device.hubUrl, password: settings.device.password, log })
           : null
-        yuanAgent = settings.yuan.enabled ? createYuanAgentRuntime({ ctx, dataDir, log, getModel: yuanGetModel, memory: isDevice() ? hubMemory : memoryCore,
+        // 阿源状态：本次运行位置 + 记忆摘要 + 任务 + 本机会话；每个 turn 注入一次。
+        ayuanState = createAyuanState({
+          location: () => currentLocation({ deviceId: localDeviceId(), name: settings.deviceName, mode: settings.mode }),
+          getBoard: () => getBoard(false),
+          getSuggestions: () => suggestionStore.list('pending'),
+          getReminders: () => yuanService?.store?.loadReminders?.() ?? [],
+          memory: isDevice() ? deviceMemory : memoryCore,
+          sessions: sessionBrowser,
+          log,
+        })
+        yuanAgent = settings.yuan.enabled ? createYuanAgentRuntime({ ctx, dataDir, log, getModel: yuanGetModel, memory: isDevice() ? deviceMemory : memoryCore,
           getContext: async () => {
             const board = await getBoard(false)
-            return JSON.stringify({ board: { stats: board.stats, pending: board.suggestions?.length || 0 }, note: '需要具体任务时调用 leo_status list；不要把候选当成已确认任务。' })
+            const situation = await ayuanState.describe()
+            return JSON.stringify({ situation, board: { stats: board.stats, pending: board.suggestions?.length || 0 }, note: '需要具体任务时调用 leo_status list；本机会话用 ayuan_sessions；不要把候选当成已确认任务。' })
           },
         }) : null
       } catch (error) {
@@ -1227,6 +1247,55 @@ export function apply(ctx, config) {
         return JSON.stringify(await memoryCore.change(args.id, args.action, args.text))
       },
     }), 'leo-status: memory tool')
+    ctx.effect(() => tools.register({
+      name: 'ayuan_status',
+      description: '读取阿源此刻的状态：本次运行所在设备、情绪、兴趣、最近记忆摘要、待办/提醒统计，以及本机最近会话标题。',
+      parameters: { type: 'object', properties: {
+        refresh: { type: 'boolean', description: '忽略 30 秒缓存，重新采集一次' },
+      }, additionalProperties: false },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      async execute(args) {
+        await startupPromise
+        const status = await ayuanState?.status({ refresh: args.refresh === true })
+        if (!status) throw new Error('阿源状态尚未就绪')
+        return JSON.stringify(status)
+      },
+    }), 'leo-status: ayuan status tool')
+    ctx.effect(() => tools.register({
+      name: 'ayuan_note',
+      description: '记录阿源自己的状态：情绪（mood）、兴趣（interest）、偏好（preference）。写进跨设备共享的那一份记忆，其他设备上的阿源也看得到。',
+      parameters: { type: 'object', properties: {
+        kind: { type: 'string', enum: ['mood', 'interest', 'preference'], description: '状态类型' },
+        text: { type: 'string', description: '一句简短的自述，例如「今天在收尾 C04 资料，情绪平稳」' },
+      }, required: ['kind', 'text'], additionalProperties: false },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      async execute(args) {
+        await startupPromise
+        const memory = isDevice() ? deviceMemory : memoryCore
+        if (!memory || typeof memory.note !== 'function') throw new Error('记忆服务未就绪')
+        const item = await memory.note({ kind: args.kind, text: args.text })
+        ayuanState?.invalidate?.()
+        return JSON.stringify({ ok: true, id: item?.id, kind: item?.kind, text: item?.text })
+      },
+    }), 'leo-status: ayuan note tool')
+    ctx.effect(() => tools.register({
+      name: 'ayuan_sessions',
+      description: '查看这台设备上的 DSH 会话：list 列出最近主会话（标题/目录/创建时间），read 读取指定会话最近的用户与助手消息。只读、限量；不包含子智能体，也不是全量导出。',
+      parameters: { type: 'object', properties: {
+        action: { type: 'string', enum: ['list', 'read'], description: 'list 列表，read 读取一个会话' },
+        id: { type: 'string', description: 'read 必填：会话 id（来自 list）' },
+        query: { type: 'string', description: 'list 可选：按标题/目录过滤' },
+        limit: { type: 'number', description: 'list 默认 12 条；read 默认 40 条消息' },
+      }, required: ['action'], additionalProperties: false },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      async execute(args) {
+        await startupPromise
+        const action = String(args.action || '')
+        if (action === 'list') return JSON.stringify({ sessions: await sessionBrowser.list({ limit: args.limit, filter: args.query || '' }) })
+        if (action !== 'read') throw new Error('只支持 list 或 read')
+        return JSON.stringify(await sessionBrowser.read(String(args.id || ''), { limit: args.limit }))
+      },
+    }), 'leo-status: ayuan sessions tool')
   })
 
   async function proposeTodo(text) {
@@ -1555,6 +1624,7 @@ export function apply(ctx, config) {
         'memory/query': (value) => ({ ok: true, items: value.id ? [memoryCore?.detail(value.id)].filter(Boolean) : value.query ? memoryCore?.search(value.query, { limit: 30, budget: 10000 }) || [] : memoryCore?.list().slice(0, 100) || [], status: memoryCore?.status }),
         'memory/change': async (value) => ({ ok: true, item: await memoryCore?.change(value.id, value.action, value.text) }),
         'memory/capture': async (value) => ({ ok: true, item: await memoryCore?.capture(value) }),
+        'memory/note': async (value) => ({ ok: true, item: await memoryCore?.note(value) }),
         activity: () => ({ ok: true, activity: yuanAgent?.activity() || { running: false, text: '', tools: [] } }),
         stop: () => yuanAgent?.stop() || { ok: true },
         state: yuanState, signals: yuanSignals, chat: yuanChat,

@@ -119,7 +119,19 @@ export async function createMemoryCore({ directory, extract, log = () => {} }) {
       await put({ ...item, id, kind: 'fact', status: item.status === 'pending' ? 'pending' : 'active', source: { legacyId: item.id, quote: item.text }, at: item.at || new Date().toISOString() })
     }
   }
-  return { capture, search, list, change, importLegacy, status,
+  /**
+   * 阿源的自我状态（兴趣/情绪/偏好）显式记录：与对话证据同一份存储、同一个中心，
+   * 因此天然跨设备共享；显式记录的条目直接 active，不需要再确认。
+   */
+  async function note({ kind, text: value, source = { by: 'ayuan' } } = {}) {
+    const body = compact(value, 400)
+    if (!body || sensitive(body)) throw new Error('这条状态不能保存')
+    if (!['interest', 'mood', 'preference', 'fact'].includes(kind)) throw new Error('未知状态类型')
+    const id = 'note:' + hash(kind + ':' + body.toLowerCase())
+    if (records.has(id)) return records.get(id)
+    return put({ id, kind, status: 'active', text: body, at: new Date().toISOString(), source, confidence: 1 })
+  }
+  return { capture, search, list, change, note, importLegacy, status,
     detail(id) { const item = records.get(id); return item && !['deleted', 'superseded'].includes(item.status) ? item : null },
     async flush() { await jobs; await tail },
     async close() { await jobs; await tail; closed = true; db?.close() },
