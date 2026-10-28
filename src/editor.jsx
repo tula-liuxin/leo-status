@@ -1,0 +1,290 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Editor, Extension, Node, getMarkRange, mergeAttributes } from '@tiptap/core'
+import StarterKit from '@tiptap/starter-kit'
+import { TaskList, TaskItem } from '@tiptap/extension-list'
+import Image from '@tiptap/extension-image'
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
+import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { Icon, createIcon } from './icons.jsx'
+
+export function attachmentEndpoint(route) {
+  const url = new URL('leo-status/api/notes-v1' + route, document.baseURI)
+  if (window.__LEO_STATUS_PAGE_TOKEN__) url.searchParams.set('_leo_status_token', window.__LEO_STATUS_PAGE_TOKEN__)
+  return url.href
+}
+
+export function descendantCounts(node) {
+  const result = [], stack = (node.content || []).map(n => [n, 0])
+  while (stack.length) {
+    const [current, depth] = stack.pop(), next = depth + (current.type === 'taskItem' ? 1 : 0)
+    if (current.type === 'taskItem') result[next - 1] = (result[next - 1] || 0) + 1
+    for (const child of current.content || []) stack.push([child, next])
+  }
+  return result
+}
+
+export function normalizeLinkHref(value) {
+  const href = String(value || '').trim()
+  if (!href || /[\u0000-\u0020\u007f]/.test(href)) return null
+  try {
+    const url = new URL(href)
+    if ((url.protocol === 'https:' || url.protocol === 'http:') && url.hostname) return href
+    if (url.protocol === 'mailto:' && url.pathname) return href
+  } catch {}
+  return null
+}
+
+/** Shared by the popover and headless tests; mark-only edits preserve text formatting. */
+export function changeLink(state, dispatch, { from, to, href, label, initialLabel, remove = false }) {
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from > to || to > state.doc.content.size) return false
+  const mark = state.schema.marks.link
+  if (!mark) return false
+  const tr = state.tr
+  if (remove) tr.removeMark(from, to, mark)
+  else {
+    const normalized = normalizeLinkHref(href)
+    if (!normalized) return false
+    const attrs = { href: normalized, target: '_blank', rel: 'noopener noreferrer' }
+    if (from !== to && label === initialLabel) tr.addMark(from, to, mark.create(attrs))
+    else {
+      const value = String(label || '').trim() || normalized
+      tr.insertText(value, from, to).addMark(from, from + value.length, mark.create(attrs))
+      tr.setSelection(TextSelection.create(tr.doc, from + value.length))
+    }
+  }
+  if (dispatch) dispatch(tr.scrollIntoView())
+  return true
+}
+
+/** Delete only an adjacent attachment block; never a paragraph or task subtree. */
+export function deleteAdjacentAttachment(state, dispatch, direction, { composing = false } = {}) {
+  if (composing || !state.selection.empty) return false
+  const { $from } = state.selection
+  if (!$from.parent.isTextblock || !$from.depth) return false
+  const backwards = direction === 'backward'
+  if (backwards ? $from.parentOffset !== 0 : $from.parentOffset !== $from.parent.content.size) return false
+  const boundary = backwards ? $from.before($from.depth) : $from.after($from.depth)
+  const resolved = state.doc.resolve(boundary), node = backwards ? resolved.nodeBefore : resolved.nodeAfter
+  if (!node || !node.isAtom || !['image', 'media'].includes(node.type.name)) return false
+  const from = backwards ? boundary - node.nodeSize : boundary
+  if (dispatch) dispatch(state.tr.delete(from, from + node.nodeSize).scrollIntoView())
+  return true
+}
+
+const AttachmentBoundaryKeys = Extension.create({
+  name: 'attachmentBoundaryKeys', priority: 1000,
+  addProseMirrorPlugins() {
+    return [new Plugin({
+      key: new PluginKey('leoAttachmentBoundary'),
+      props: { handleKeyDown(view, event) {
+        if (!['Backspace', 'Delete'].includes(event.key) || event.ctrlKey || event.metaKey || event.altKey) return false
+        if (event.target?.closest?.('audio,video,input,button,select,textarea')) return false
+        return deleteAdjacentAttachment(view.state, view.dispatch, event.key === 'Backspace' ? 'backward' : 'forward', { composing: view.composing || event.isComposing })
+      } },
+    })]
+  },
+})
+
+export const AttachmentImage = Image.extend({
+  addAttributes() { return { ...this.parent?.(), attachmentId: { default: null } } },
+  renderHTML({ HTMLAttributes }) {
+    return ['img', mergeAttributes(HTMLAttributes, { src: attachmentEndpoint('/attachment?id=' + HTMLAttributes.attachmentId) })]
+  },
+})
+
+export const Media = Node.create({
+  name: 'media', group: 'block', atom: true,
+  addAttributes() { return { attachmentId: { default: null }, mime: { default: '' }, name: { default: '' } } },
+  parseHTML() { return [{ tag: 'figure[data-media]' }] },
+  renderHTML({ HTMLAttributes: a }) {
+    const src = attachmentEndpoint('/attachment?id=' + a.attachmentId)
+    const kind = a.mime.startsWith('audio/') ? 'audio' : a.mime.startsWith('video/') ? 'video' : null
+    return ['figure', { 'data-media': a.attachmentId }, kind ? [kind, { controls: true, src, preload: 'metadata' }] : ['a', { href: src, target: '_blank', rel: 'noopener noreferrer' }, a.name], ['figcaption', {}, a.name]]
+  },
+  addNodeView() { return ({ node }) => {
+    const dom = document.createElement('figure'), a = node.attrs, caption = document.createElement('figcaption')
+    dom.dataset.media = a.attachmentId; dom.contentEditable = 'false'; caption.textContent = a.name
+    const kind = a.mime.startsWith('audio/') ? 'audio' : a.mime.startsWith('video/') ? 'video' : null
+    const media = document.createElement(kind || 'a'), src = attachmentEndpoint('/attachment?id=' + a.attachmentId)
+    if (kind) { media.src = src; media.controls = true; media.preload = 'metadata'; media.setAttribute('aria-label', a.name || '媒体附件') }
+    else { media.href = src; media.target = '_blank'; media.rel = 'noopener noreferrer'; media.textContent = a.name || '打开附件' }
+    dom.append(media, caption)
+    return { dom, stopEvent: e => Boolean(e.target?.closest?.('audio,video,a,input,button')), ignoreMutation: () => true }
+  } },
+})
+
+function taskExtension(onFocus) {
+  return TaskItem.extend({
+    addAttributes() { return { ...this.parent?.(), id: { default: null }, completedAt: { default: null }, completionEventId: { default: null } } },
+    addNodeView() { return ({ node, editor, getPos }) => {
+      let current = node, folded = false
+      const dom = document.createElement('li'), fold = document.createElement('button'), checkHit = document.createElement('label'), check = document.createElement('input'), body = document.createElement('div')
+      dom.className = 'ln-task'; dom.dataset.type = 'taskItem'; body.className = 'ln-taskbody'
+      fold.type = 'button'; fold.className = 'ln-task-fold ln-icon-button'; fold.contentEditable = 'false'
+      check.type = 'checkbox'; check.contentEditable = 'false'; check.setAttribute('aria-label', '完成待办')
+      checkHit.className = 'ln-check-hit'; checkHit.contentEditable = 'false'; checkHit.append(check)
+      const render = n => {
+        current = n; check.checked = n.attrs.checked
+        const expandable = n.childCount > 1
+        fold.disabled = !expandable; fold.style.visibility = expandable ? '' : 'hidden'
+        fold.replaceChildren(createIcon(folded ? 'chevronRight' : 'chevronDown', 16))
+        fold.setAttribute('aria-label', folded ? '展开待办内容' : '收起待办内容'); fold.title = folded ? '展开待办内容' : '收起待办内容'
+        fold.setAttribute('aria-expanded', String(!folded)); dom.classList.toggle('is-collapsed', folded && expandable)
+      }
+      fold.addEventListener('mousedown', e => e.preventDefault())
+      fold.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); folded = !folded; render(current) })
+      check.addEventListener('change', () => editor.chain().focus().command(({ tr }) => {
+        const pos = getPos(); if (typeof pos !== 'number') return false
+        tr.setNodeMarkup(pos, undefined, { ...current.attrs, checked: check.checked, completedAt: check.checked ? new Date().toISOString() : null, completionEventId: crypto.randomUUID() }); return true
+      }).run())
+      dom.append(fold, checkHit, body); render(node)
+      return {
+        dom, contentDOM: body,
+        update(next) { if (next.type !== current.type) return false; render(next); return true },
+        stopEvent: e => checkHit.contains(e.target) || fold.contains(e.target),
+        ignoreMutation: mutation => mutation.type !== 'selection' && !body.contains(mutation.target),
+      }
+    } },
+    addProseMirrorPlugins() {
+      const parent = this.parent?.() || []
+      return [...parent, new Plugin({
+        key: new PluginKey('leoTaskInlineActions'),
+        props: { decorations(state) {
+          const widgets = []
+          state.doc.descendants((node, pos) => {
+            if (node.type.name !== 'taskItem' || !node.firstChild?.isTextblock) return
+            const counts = descendantCounts(node.toJSON()), id = node.attrs.id, label = node.firstChild.textContent || '未命名待办'
+            widgets.push(Decoration.widget(pos + node.firstChild.nodeSize, () => {
+              const actions = document.createElement('span'); actions.className = 'ln-task-actions'; actions.contentEditable = 'false'
+              actions.setAttribute('role', 'group'); actions.setAttribute('aria-label', '待办内容入口')
+              const go = event => { event.preventDefault(); event.stopPropagation(); if (id) onFocus(id) }
+              if (counts.length) {
+                const count = document.createElement('button'); count.type = 'button'; count.className = 'ln-count-badge'
+                count.textContent = counts.slice(0, 3).join(' / ') + (counts.length > 3 ? ' / …' : '')
+                count.title = '全部子待办：' + counts.map((n, i) => `第 ${i + 1} 层 ${n} 项`).join('，') + '；点击进入内容'
+                count.setAttribute('aria-label', count.title); count.addEventListener('click', go); actions.append(count)
+              }
+              const enter = document.createElement('button'); enter.type = 'button'; enter.className = 'ln-icon-button ln-enter'; enter.title = '进入待办内容页'
+              enter.setAttribute('aria-label', '进入待办内容页 ' + label); enter.append(createIcon('enter', 17)); enter.addEventListener('click', go); actions.append(enter)
+              actions.addEventListener('mousedown', e => e.preventDefault())
+              return actions
+            }, { key: `${id}:${counts.join(',')}:${label}`, side: 1, stopEvent: () => true, ignoreSelection: true }))
+          })
+          return DecorationSet.create(state.doc, widgets)
+        } },
+      })]
+    },
+  }).configure({ nested: true })
+}
+
+export function editorExtensions(onFocus = () => {}) {
+  return [StarterKit.configure({ link: { openOnClick: false, protocols: ['http', 'https', 'mailto'] } }), TaskList, taskExtension(onFocus), AttachmentImage, Media, AttachmentBoundaryKeys]
+}
+
+export default function RichEditor({ doc, onChange, onFocus, editorRef }) {
+  const element = useRef(), callbacks = useRef({ onChange, onFocus })
+  callbacks.current = { onChange, onFocus }
+  useEffect(() => {
+    let ready = false, fixing = false
+    const editor = new Editor({
+      element: element.current, extensions: editorExtensions(id => callbacks.current.onFocus(id)), content: doc,
+      editorProps: {
+        attributes: { class: 'ln-prose', spellcheck: 'false', 'aria-label': '笔记正文' },
+        handlePaste(view, event) {
+          const files = [...(event.clipboardData?.files || [])]
+          if (!files.some(file => file.type.startsWith('image/'))) return false
+          event.preventDefault(); editorRef.current?.upload?.(files); return true
+        },
+        handleClick(view, pos, event) {
+          const link = event.target?.closest?.('a')
+          if (!link || link.closest('figure[data-media]')) return false
+          event.preventDefault(); editor.commands.setTextSelection(pos); editorRef.openLink?.(); return true
+        },
+      },
+      onCreate() { ready = true },
+      onUpdate({ editor, transaction }) {
+        // A focus/selection-only transaction may append StarterKit's empty trailing
+        // paragraph. That is view normalization, not a user's edit or a new draft.
+        if (!ready || fixing || !transaction.docChanged) return
+        const tr = editor.state.tr, ids = new Set()
+        editor.state.doc.descendants((node, pos) => {
+          if (node.type.name !== 'taskItem') return
+          if (!node.attrs.id || ids.has(node.attrs.id)) tr.setNodeMarkup(pos, undefined, { ...node.attrs, id: crypto.randomUUID() })
+          ids.add(node.attrs.id)
+        })
+        if (tr.docChanged) { fixing = true; editor.view.dispatch(tr.setMeta('addToHistory', false)); fixing = false }
+        callbacks.current.onChange(editor.getJSON())
+      },
+    })
+    editorRef.current = editor; editorRef.notifyReady?.(editor)
+    return () => { ready = false; editorRef.notifyReady?.(null); editor.destroy(); if (editorRef.current === editor) editorRef.current = null }
+  }, [])
+  return <div ref={element} />
+}
+
+export function EditorToolbar({ editorRef }) {
+  const [, update] = useState(0), [link, setLink] = useState(null), [error, setError] = useState('')
+  const address = useRef(), originalSelection = useRef(null), originalDocument = useRef(null)
+  const openLink = useCallback(() => {
+    const editor = editorRef.current; if (!editor || editor.isDestroyed) return
+    const selection = editor.state.selection, mark = getMarkRange(selection.$from, editor.schema.marks.link)
+    const range = selection.empty && mark ? mark : { from: selection.from, to: selection.to }
+    const label = editor.state.doc.textBetween(range.from, range.to, ' '), href = editor.getAttributes('link').href || ''
+    originalSelection.current = range; originalDocument.current = editor.state.doc
+    setLink({ label, initialLabel: label, href, existing: Boolean(href) }); setError('')
+  }, [editorRef])
+  useEffect(() => {
+    let detach = () => {}, alive = true
+    const attach = editor => {
+      detach(); detach = () => {}
+      if (!alive) return
+      update(n => n + 1)
+      if (!editor) return
+      const changed = () => { if (alive) update(n => n + 1) }
+      editor.on('selectionUpdate', changed); editor.on('transaction', changed)
+      detach = () => { editor.off('selectionUpdate', changed); editor.off('transaction', changed) }
+    }
+    editorRef.notifyReady = attach; editorRef.openLink = openLink
+    if (editorRef.current) attach(editorRef.current)
+    return () => { alive = false; detach(); if (editorRef.notifyReady === attach) delete editorRef.notifyReady; if (editorRef.openLink === openLink) delete editorRef.openLink }
+  }, [editorRef, openLink])
+  useEffect(() => { if (link) address.current?.focus() }, [Boolean(link)])
+  const run = (command, arg) => { const editor = editorRef.current; if (editor && !editor.isDestroyed) editor.chain().focus()[command](arg).run() }
+  const closeLink = () => { setLink(null); editorRef.current?.commands.focus() }
+  const applyLink = event => {
+    event?.preventDefault(); const href = normalizeLinkHref(link.href), editor = editorRef.current
+    if (!href) { setError('请输入 http://、https:// 或 mailto: 地址'); return }
+    if (!editor || editor.isDestroyed) return
+    const range = originalSelection.current
+    if (!editor.state.doc.eq(originalDocument.current) || range.to > editor.state.doc.content.size) { setError('正文已变化，请重新选择链接位置'); return }
+    if (!changeLink(editor.state, editor.view.dispatch, { ...range, ...link, href })) { setError('无法更新链接，请重新选择文字'); return }
+    editor.commands.focus()
+    setLink(null)
+  }
+  const removeLink = () => { const editor = editorRef.current; if (!editor || editor.isDestroyed) return; if (!editor.state.doc.eq(originalDocument.current)) { setError('正文已变化，请重新选择链接位置'); return }; changeLink(editor.state, editor.view.dispatch, { ...originalSelection.current, remove: true }); editor.commands.focus(); setLink(null) }
+  const buttons = [
+    ['bold', '加粗', 'toggleBold', undefined, 'bold'], ['italic', '斜体', 'toggleItalic', undefined, 'italic'],
+    ['heading', '二级标题', 'toggleHeading', { level: 2 }, 'heading'], ['list', '普通列表', 'toggleBulletList', undefined, 'bulletList'],
+    ['todo', '待办列表', 'toggleTaskList', undefined, 'taskList'], ['indent', '增加缩进', 'sinkListItem', 'taskItem'],
+    ['outdent', '减少缩进', 'liftListItem', 'taskItem'],
+  ]
+  const editor = editorRef.current
+  return <div className="ln-format-wrap">
+    <div className="ln-format" role="toolbar" aria-label="笔记格式">
+      {buttons.map(([name, label, command, arg, active]) => <button key={name} type="button" className="ln-icon-button" title={label} aria-label={label} aria-pressed={active ? Boolean(editor && !editor.isDestroyed && editor.isActive(active)) : undefined} onMouseDown={e => e.preventDefault()} onClick={() => run(command, arg)}><Icon name={name} /></button>)}
+      <span className="ln-toolbar-separator" aria-hidden="true" />
+      <button type="button" className="ln-icon-button" title="插入或编辑链接" aria-label="插入或编辑链接" aria-expanded={Boolean(link)} onMouseDown={e => e.preventDefault()} onClick={openLink}><Icon name="link" /></button>
+      <button type="button" className="ln-icon-button" title="撤销" aria-label="撤销" onMouseDown={e => e.preventDefault()} onClick={() => run('undo')}><Icon name="undo" /></button>
+      <button type="button" className="ln-icon-button" title="重做" aria-label="重做" onMouseDown={e => e.preventDefault()} onClick={() => run('redo')}><Icon name="redo" /></button>
+    </div>
+    {link && <section className="ln-link-popover" role="dialog" aria-label="插入或编辑链接" onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeLink() } }}>
+      <form onSubmit={applyLink}>
+        <header><strong>链接</strong><button type="button" className="ln-icon-button" aria-label="关闭链接编辑" title="关闭" onClick={closeLink}><Icon name="x" /></button></header>
+        <label>显示文字<input value={link.label} placeholder="留空时显示网址" onChange={e => setLink({ ...link, label: e.target.value })} /></label>
+        <label>地址<input ref={address} type="text" inputMode="url" value={link.href} placeholder="https://… 或 mailto:…" onChange={e => setLink({ ...link, href: e.target.value })} /></label>
+        {error && <p role="alert" className="ln-error">{error}</p>}
+        <footer><button type="submit" className="ln-primary">保存链接</button>{link.existing && <button type="button" onClick={removeLink}><Icon name="unlink" /> 移除链接</button>}<button type="button" disabled={!normalizeLinkHref(link.href)} onClick={() => window.open(normalizeLinkHref(link.href), '_blank', 'noopener,noreferrer')}><Icon name="external" /> 打开</button></footer>
+      </form>
+    </section>}
+  </div>
+}

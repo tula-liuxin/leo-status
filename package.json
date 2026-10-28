@@ -1,9 +1,9 @@
 {
   "name": "leo-status",
-  "version": "1.0.0",
-  "private": true,
+  "version": "2.0.0",
+  "private": false,
   "type": "module",
-  "description": "Leo 待办看板：Obsidian 待办自动展示，会话与笔记候选确认后追踪，多设备中心同步。阿源已拆分为独立的 ayuan 包。",
+  "description": "Leo 的时间轴、富文本笔记与层级待办，本机中心存储",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -12,13 +12,9 @@
   },
   "files": [
     "index.js",
-    "scan.js",
     "settings.js",
     "sync.js",
     "hub.js",
-    "edit.js",
-    "suggest.js",
-    "intake.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
@@ -26,7 +22,12 @@
     "README.md",
     "THIRD-PARTY-NOTICES.txt",
     "CONTRACT.md",
-    "HISTORY-0.x.md"
+    "HISTORY-0.x.md",
+    "notes.js",
+    "notes-http.js",
+    "notes-titles.js",
+    "relay.js",
+    "THIRD-PARTY-LICENSES.txt"
   ],
   "dsh": {
     "bundle": {
@@ -46,12 +47,23 @@
     "plugin",
     "todo",
     "status",
-    "obsidian",
     "multi-device"
   ],
   "author": {
     "name": "leo",
     "url": "https://github.com/tula-liuxin"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@tiptap/core": "3.32.0",
+    "@tiptap/extension-image": "3.32.0",
+    "@tiptap/extension-link": "3.32.0",
+    "@tiptap/extension-list": "3.32.0",
+    "@tiptap/starter-kit": "3.32.0",
+    "esbuild": "0.28.2"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/notes.test.mjs test/notes-host.test.mjs test/hub-route-lifecycle.test.mjs test/polish-backend.test.mjs test/editor-*.test.mjs"
+  }
 }

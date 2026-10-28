@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Leo Status",
-    "description": "Discover personal commitments from notes and real user messages, review and track them. Devices share suggestions and the board through one center."
+    "title": "leo-status",
+    "description": "Independent rich-text notes, timeline and nested tasks. The local machine is the storage center; drafts autosave and submitted notes populate the board."
   }
 }
