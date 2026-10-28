@@ -21,6 +21,7 @@ async function host(t, base, name, settings, config = {}) {
   const routes = new Map(), effects = []
   const services = { webServer: { register(route) { routes.set(route.path, route); return () => routes.delete(route.path) }, tapIndex() { return () => {} } }, connection: { authorizeIndex() { return true } } }
   const ctx = { get(name) { return services[name] }, on() { return () => {} },
+    provide(name, value) { services[name] = value; return () => { delete services[name] } },
     effect(fn) { const dispose = fn(); effects.push(dispose); return dispose },
     inject(names, fn) { if (names.every((name) => services[name])) fn(services); return () => {} },
   }

@@ -186,6 +186,8 @@ export function apply(ctx, config) {
 
   /** @type {{child: any, state: string, error: string|null, restarts: number, timer: any, stopping: boolean}} */
   let tunnel = { child: null, state: 'disabled', error: null, restarts: 0, timer: null, stopping: false }
+  /** 中心模式给其他包挂载的额外 HTTP 路由（P2 起由 ayuan 注册 /api/yuan/*）。 */
+  const hubRoutes = []
 
   const mode = () => settings.mode
   const isHub = () => settings.mode === 'hub'
@@ -1178,6 +1180,85 @@ export function apply(ctx, config) {
     return result
   }
 
+  /* --------------------------- 跨插件服务契约（P1） --------------------------- */
+  // 这些服务是 leo-status 与 ayuan 两个包之间唯一的通道：只传数据，不传宿主对象。
+  /** 看板服务：读取 board、提议待办、执行已确认待办的写操作。 */
+  const leoBoard = {
+    async list(options = {}) { await startupPromise; return getBoard(options?.force === true) },
+    async stats() { const board = await leoBoard.list(); return board?.stats ?? null },
+    async propose(text) {
+      await startupPromise
+      if (isDevice()) return remoteYuan('propose', { text })
+      return proposeTodo(text)
+    },
+    async action(body) { await startupPromise; return enqueueAction(() => performTodoAction(body)) },
+  }
+  ctx.provide('leoBoard', leoBoard)
+  /** 中心服务：当前模式、中心地址、远端调用，以及给其他包注册中心 HTTP 路由的扩展点。 */
+  const leoHub = {
+    mode: () => mode(),
+    isHub: () => isHub(),
+    isDevice: () => isDevice(),
+    baseUrl: () => settings.device.hubUrl,
+    remoteCall: (route, body) => remoteYuan(route, body),
+    registerRoute: (prefix, handler) => { hubRoutes.push({ prefix, handler }) },
+  }
+  ctx.provide('leoHub', leoHub)
+  /** 阿源记忆服务：本机记忆核心或设备模式的中心记忆适配器。 */
+  const ayuanMemory = {
+    async search(query) {
+      await startupPromise
+      if (isDevice()) return remoteYuan('memory/query', { action: 'search', query })
+      if (!memoryCore) throw new Error('记忆服务未就绪')
+      return memoryCore.search(query || '')
+    },
+    async detail(id) {
+      await startupPromise
+      if (isDevice()) return remoteYuan('memory/query', { action: 'detail', id })
+      if (!memoryCore) throw new Error('记忆服务未就绪')
+      return memoryCore.detail(id)
+    },
+    async change(id, action, text) {
+      await startupPromise
+      if (isDevice()) return remoteYuan('memory/change', { id, action, text })
+      if (!memoryCore) throw new Error('记忆服务未就绪')
+      return memoryCore.change(id, action, text)
+    },
+    async note({ kind, text }) {
+      await startupPromise
+      const memory = isDevice() ? deviceMemory : memoryCore
+      if (!memory || typeof memory.note !== 'function') throw new Error('记忆服务未就绪')
+      const item = await memory.note({ kind, text })
+      ayuanState?.invalidate?.()
+      return item
+    },
+  }
+  ctx.provide('ayuanMemory', ayuanMemory)
+  /** 阿源状态服务：位置 / 情绪 / 兴趣 / 记忆摘要 / 任务 / 本机会话。 */
+  const ayuanStatus = {
+    async status(options = {}) {
+      await startupPromise
+      if (!ayuanState) return null
+      return ayuanState.status({ refresh: options?.refresh === true })
+    },
+    invalidate: () => ayuanState?.invalidate?.(),
+  }
+  ctx.provide('ayuanStatus', ayuanStatus)
+  /** 阿源上下文服务：本机会话只读浏览。 */
+  const ayuanContext = {
+    async sessions({ limit, filter } = {}) {
+      await startupPromise
+      if (!sessionBrowser) throw new Error('会话服务未就绪')
+      return sessionBrowser.list({ limit, filter: filter || '' })
+    },
+    async session(id, { limit } = {}) {
+      await startupPromise
+      if (!sessionBrowser) throw new Error('会话服务未就绪')
+      return sessionBrowser.read(String(id || ''), { limit })
+    },
+  }
+  ctx.provide('ayuanContext', ayuanContext)
+
   ctx.effect(() => {
     startupPromise = startup()
     startupPromise.catch((error) => {
@@ -1204,7 +1285,7 @@ export function apply(ctx, config) {
     agentDefaultModel = services.agentDefaultModel
   })
 
-  ctx.inject(['tools'], ({ tools }) => {
+  ctx.inject(['tools', 'leoBoard', 'ayuanMemory', 'ayuanStatus', 'ayuanContext'], ({ tools, leoBoard, ayuanMemory, ayuanStatus, ayuanContext }) => {
     ctx.effect(() => tools.register({
       name: 'leo_status',
       description: '读取 Leo 待办，提议 Leo 本人需执行的事项，或按用户要求更新已确认待办状态。propose 仅生成待确认建议，不能代替用户 Accept。',
@@ -1216,17 +1297,13 @@ export function apply(ctx, config) {
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       async execute(args, exec) {
         exec?.signal?.throwIfAborted?.()
-        await startupPromise
         if (args.action === 'list') {
-          const board = await getBoard(false)
+          const board = await leoBoard.list()
           return JSON.stringify({ todos: board.todos, suggestions: board.suggestions, discovery: board.discovery })
         }
-        if (args.action === 'propose') {
-          if (isDevice()) return JSON.stringify(await remoteYuan('propose', { text: args.text }))
-          return JSON.stringify(await proposeTodo(args.text))
-        }
+        if (args.action === 'propose') return JSON.stringify(await leoBoard.propose(args.text))
         if (!['done', 'undone', 'cancel', 'restore', 'delete'].includes(args.action)) throw new Error('只支持读取和更新已确认待办；Accept 需要 Leo 点击')
-        return JSON.stringify(await enqueueAction(() => performTodoAction(args)))
+        return JSON.stringify(await leoBoard.action(args))
       },
     }), 'leo-status: task tool')
     ctx.effect(() => tools.register({
@@ -1238,13 +1315,10 @@ export function apply(ctx, config) {
       }, required: ['action'], additionalProperties: false },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       async execute(args) {
-        await startupPromise
-        if (isDevice()) return JSON.stringify(await remoteYuan(['correct','forget'].includes(args.action) ? 'memory/change' : 'memory/query', args))
-        if (!memoryCore) throw new Error('记忆服务未就绪')
-        if (args.action === 'search') return JSON.stringify(memoryCore.search(args.query || ''))
-        if (args.action === 'detail') return JSON.stringify(memoryCore.detail(args.id))
+        if (args.action === 'search') return JSON.stringify(await ayuanMemory.search(args.query))
+        if (args.action === 'detail') return JSON.stringify(await ayuanMemory.detail(args.id))
         if (!['correct','forget'].includes(args.action)) throw new Error('不支持的记忆操作')
-        return JSON.stringify(await memoryCore.change(args.id, args.action, args.text))
+        return JSON.stringify(await ayuanMemory.change(args.id, args.action, args.text))
       },
     }), 'leo-status: memory tool')
     ctx.effect(() => tools.register({
@@ -1255,8 +1329,7 @@ export function apply(ctx, config) {
       }, additionalProperties: false },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       async execute(args) {
-        await startupPromise
-        const status = await ayuanState?.status({ refresh: args.refresh === true })
+        const status = await ayuanStatus.status({ refresh: args.refresh === true })
         if (!status) throw new Error('阿源状态尚未就绪')
         return JSON.stringify(status)
       },
@@ -1270,11 +1343,7 @@ export function apply(ctx, config) {
       }, required: ['kind', 'text'], additionalProperties: false },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       async execute(args) {
-        await startupPromise
-        const memory = isDevice() ? deviceMemory : memoryCore
-        if (!memory || typeof memory.note !== 'function') throw new Error('记忆服务未就绪')
-        const item = await memory.note({ kind: args.kind, text: args.text })
-        ayuanState?.invalidate?.()
+        const item = await ayuanMemory.note({ kind: args.kind, text: args.text })
         return JSON.stringify({ ok: true, id: item?.id, kind: item?.kind, text: item?.text })
       },
     }), 'leo-status: ayuan note tool')
@@ -1289,11 +1358,10 @@ export function apply(ctx, config) {
       }, required: ['action'], additionalProperties: false },
       output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       async execute(args) {
-        await startupPromise
         const action = String(args.action || '')
-        if (action === 'list') return JSON.stringify({ sessions: await sessionBrowser.list({ limit: args.limit, filter: args.query || '' }) })
+        if (action === 'list') return JSON.stringify({ sessions: await ayuanContext.sessions({ limit: args.limit, filter: args.query || '' }) })
         if (action !== 'read') throw new Error('只支持 list 或 read')
-        return JSON.stringify(await sessionBrowser.read(String(args.id || ''), { limit: args.limit }))
+        return JSON.stringify(await ayuanContext.session(args.id, { limit: args.limit }))
       },
     }), 'leo-status: ayuan sessions tool')
   })
