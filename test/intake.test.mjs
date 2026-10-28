@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { discoverIntake, intakeId, personalCommitments, createSessionIntake } from '../intake.js'
-import { recallMemory, createYuanStore, buildSignals } from '../yuan.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -45,25 +44,4 @@ test('session intake uses real human messages, skips subagents and inherited his
   assert.equal(discoverIntake(items).length, 1)
   await intake.refresh()
   assert.equal(opened, 1); assert.equal(closed, 1)
-})
-
-test('relevant confirmed memory survives recency pressure; multiline replies survive storage', async (t) => {
-  const memories = [{ text: '论文研究采用 OnePred 数据集', status: 'active' }, ...Array.from({ length: 40 }, (_, i) => ({ text: `无关事项 ${i}`, status: 'active' })), { text: '论文秘密推测', status: 'pending' }]
-  assert.equal(recallMemory(memories, '论文研究', 3)[0].text, memories[0].text)
-  assert.ok(recallMemory(memories, '论文研究').every((m) => m.status !== 'pending'))
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'leo-format-'))
-  t.after(() => rm(dir, { recursive: true, force: true }))
-  const store = createYuanStore(dir)
-  await store.appendChat({ role: 'assistant', text: '# 标题\n\n- 第一项\n- 第二项', usedAgent: true })
-  const [saved] = await store.loadChat()
-  assert.equal(saved.text, '# 标题\n\n- 第一项\n- 第二项')
-  assert.equal(saved.usedAgent, true)
-})
-
-test('seen suggestions remain actionable without being new; nonurgent reminders are not urgent', () => {
-  const now = Date.parse('2026-10-27T01:00:00Z')
-  const { signals, badge } = buildSignals({ now, lastSeenAt: now, suggestions: [{ text: '验收', status: 'pending', createdAt: new Date(now - 1).toISOString() }], reminders: [{ text: '散步', at: new Date(now + 3600000).toISOString() }] })
-  assert.equal(signals.find((s) => s.kind === 'suggestion').isNew, false)
-  assert.equal(badge.urgent, 0)
-  assert.equal(badge.kinds.suggestion, 1)
 })

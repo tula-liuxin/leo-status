@@ -838,6 +838,8 @@ export function createHubHandler(opts) {
   const boardProvider = typeof options.boardProvider === 'function' ? options.boardProvider : null;
   const yuanChat = typeof options.yuanChat === 'function' ? options.yuanChat : null;
   const yuanRequest = typeof options.yuanRequest === 'function' ? options.yuanRequest : null;
+  const extraRoutes = Array.isArray(options.extraRoutes) ? options.extraRoutes : [];
+  const boardWrites = isPlainObject(options.boardWrites) ? options.boardWrites : null;
   const log = typeof options.log === 'function' ? options.log : () => {};
   const syncIntervalMs =
     typeof options.syncIntervalMs === 'number' &&
@@ -1051,6 +1053,42 @@ export function createHubHandler(opts) {
         return;
       }
       await ensureLoaded();
+
+      // 2.5) 其他包注册的扩展路由（如 ayuan 的 /api/yuan/*）：鉴权之后、解析 body 之前处理。
+      for (const entry of extraRoutes) {
+        const prefix = typeof entry?.prefix === 'string' ? entry.prefix : '';
+        if (prefix === '' || typeof entry?.handler !== 'function') continue;
+        if (!pathname.startsWith(prefix)) continue;
+        let handled = false;
+        try {
+          handled = await entry.handler(req, res, pathname, method);
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: String(error?.message ?? error) });
+          return;
+        }
+        if (handled) return;
+      }
+
+      // 2.6) 看板写操作（设备模式转发到中心）。
+      if (boardWrites !== null && method === 'POST') {
+        const route =
+          pathname === '/api/board/propose' ? 'propose'
+          : pathname === '/api/board/action' ? 'action'
+          : pathname === '/api/board/suggestion/accept' ? 'accept'
+          : pathname === '/api/board/suggestion/dismiss' ? 'dismiss'
+          : null;
+        if (route !== null && typeof boardWrites[route] === 'function') {
+          const body = await readJsonBody(req, res);
+          if (body === null) return;
+          try {
+            const value = isPlainObject(body.value) ? body.value : {};
+            sendJson(res, 200, { ok: true, ...(await boardWrites[route](value)) });
+          } catch (error) {
+            sendJson(res, 400, { ok: false, error: String(error?.message ?? error) });
+          }
+          return;
+        }
+      }
 
       // 3) 路由匹配：未知 404，方法不符 405。
       if (pathname === '/api/join') {

@@ -121,6 +121,15 @@ export async function requestHubYuan({ hubUrl, password, route, body }) {
   return data
 }
 
+/** 设备模式的看板写操作走中心：propose / action / suggestion accept|dismiss。 */
+export async function requestHubBoard({ hubUrl, password, route, body }) {
+  const data = await request(hubUrl, `/api/board/${route}`, {
+    password, method: 'POST', body, timeoutMs: 20000,
+  })
+  if (data?.ok !== true) throw new Error(data?.error || '中心看板暂不可用')
+  return data
+}
+
 /** 把本地快照裁成可上报的白名单形状。 */
 export function slimSnapshot(snapshot) {
   const todos = Array.isArray(snapshot?.todos) ? snapshot.todos.slice(0, MAX_SNAPSHOT_TODOS) : []
