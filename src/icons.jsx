@@ -7,6 +7,7 @@ import React from 'react'
 // top/arrowUpToLine: official Lucide icons/arrow-up-to-line.svg.
 // React and native Tiptap NodeViews intentionally share these path definitions.
 const paths = {
+  "folderMove": [["path",{"d":"M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"}],["path",{"d":"M9 13h7m-3-3 3 3-3 3"}]],
   "trashX": [
     ["path", {"d":"M3 6h18M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"}],
     ["path", {"d":"m5 6 1 14a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1l1-14"}],

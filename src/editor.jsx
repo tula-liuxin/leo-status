@@ -6,6 +6,7 @@ import Image from '@tiptap/extension-image'
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { Icon, createIcon } from './icons.jsx'
+import {tagsInText,matchTag} from '../tags.js'
 
 export function attachmentEndpoint(route) {
   const url = new URL('leo-status/api/notes-v1' + route, document.baseURI)
@@ -177,11 +178,13 @@ function taskExtension(onFocus) {
   }).configure({ nested: true })
 }
 
+function editorTagRanges(doc){const ranges=[];doc.descendants((node,pos)=>{if(!node.isTextblock||node.type.spec.code)return;let run='',start=null;const flush=()=>{if(start!==null)for(const m of tagsInText(run))ranges.push({...m,from:start+m.start,to:start+m.end});run='';start=null};node.forEach((child,offset)=>{const blocked=!child.isText||child.marks.some(m=>m.type.name==='code'||m.type.name==='link');if(blocked){flush();return}if(start===null)start=pos+1+offset;run+=child.text||''});flush();return false});return ranges}
+const InlineTagHighlight=Extension.create({name:'inlineTagHighlight',addProseMirrorPlugins(){return [new Plugin({key:new PluginKey('leoInlineTags'),props:{decorations(state){return DecorationSet.create(state.doc,editorTagRanges(state.doc).map(t=>Decoration.inline(t.from,t.to,{class:'ln-inline-tag'})))}}})]}})
 export function editorExtensions(onFocus = () => {}) {
-  return [StarterKit.configure({ link: { openOnClick: false, protocols: ['http', 'https', 'mailto'] } }), TaskList, taskExtension(onFocus), AttachmentImage, Media, AttachmentBoundaryKeys]
+  return [StarterKit.configure({ link: { openOnClick: false, protocols: ['http', 'https', 'mailto'] } }), TaskList, taskExtension(onFocus), AttachmentImage, Media, AttachmentBoundaryKeys, InlineTagHighlight]
 }
 
-export default function RichEditor({ doc, onChange, onFocus, editorRef }) {
+export default function RichEditor({ doc, onChange, onFocus, editorRef, locateTag }) {
   const element = useRef(), callbacks = useRef({ onChange, onFocus })
   callbacks.current = { onChange, onFocus }
   useEffect(() => {
@@ -201,7 +204,7 @@ export default function RichEditor({ doc, onChange, onFocus, editorRef }) {
           event.preventDefault(); editor.commands.setTextSelection(pos); editorRef.openLink?.(); return true
         },
       },
-      onCreate() { ready = true },
+      onCreate({editor}) { ready = true;if(locateTag){const found=editorTagRanges(editor.state.doc).find(t=>matchTag(t.key,locateTag));if(found)requestAnimationFrame(()=>{if(editor.isDestroyed)return;const node=editor.view.domAtPos(found.from).node;(node.nodeType===1?node:node.parentElement)?.scrollIntoView({block:'center'})})} },
       onUpdate({ editor, transaction }) {
         // A focus/selection-only transaction may append StarterKit's empty trailing
         // paragraph. That is view normalization, not a user's edit or a new draft.
@@ -288,3 +291,5 @@ export function EditorToolbar({ editorRef }) {
     </section>}
   </div>
 }
+
+

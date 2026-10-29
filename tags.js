@@ -1,0 +1,10 @@
+// The stored identity uses / for compatibility with earlier versions; display uses #.
+const segment='[-_\\p{L}\\p{M}\\p{N}\\p{S}]+(?:\\.[-_\\p{L}\\p{M}\\p{N}\\p{S}]+)*';
+const valid=new RegExp(`^${segment}(?:/${segment})*$`,'u');
+export function tagKey(value){const raw=String(value||'').trim().replace(/^#/,'').replace(/#/g,'/').normalize('NFC');if(!raw||raw.length>200||!/[\p{L}\p{M}_\-\p{S}]/u.test(raw)||!valid.test(raw))return null;return raw.toLocaleLowerCase('und')}
+export function tagDisplay(value){return '#'+String(value||'').replace(/^#/,'').replace(/\//g,'#')}
+export function normalizeTags(values){if(!Array.isArray(values))return [];const out=[],seen=new Set();for(const v of values){const key=tagKey(v);if(key&&!seen.has(key)){seen.add(key);out.push(String(v).trim().replace(/^#/,'').replace(/#/g,'/').normalize('NFC'))}}return out}
+export function tagsInText(text){const out=[],re=new RegExp(`(?:^|[\\s([{（【“‘])#(${segment}(?:[/#]${segment})*)`,'gu');for(const match of String(text||'').matchAll(re)){const key=tagKey(match[1]);if(key){const start=match.index+match[0].indexOf('#');out.push({key,label:match[1].replace(/#/g,'/'),start,end:start+1+match[1].length})}}return out}
+export function inlineTags(doc){const out=[];function visit(n,task,skip){if(!n||typeof n!=='object')return;const blocked=skip||n.type==='codeBlock'||(n.marks||[]).some(m=>m.type==='code'||m.type==='link');if(blocked)return;const taskId=n.type==='taskItem'?n.attrs?.id:task;let run='';const flush=()=>{for(const match of tagsInText(run))out.push({key:match.key,label:match.label,taskId:taskId||null});run=''};for(const child of n.content||[]){if(child.type==='text'&&!(child.marks||[]).some(m=>m.type==='code'||m.type==='link'))run+=child.text||'';else{flush();visit(child,taskId,blocked)}}flush()}visit(doc,null,false);return out}
+export function matchTag(path,filter){const p=tagKey(path),f=tagKey(filter);return !!p&&!!f&&(p===f||p.startsWith(f+'/'))}
+export function noteTags(doc){return normalizeTags(doc?.attrs?.noteTags)}

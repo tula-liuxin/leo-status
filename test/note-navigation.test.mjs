@@ -1,0 +1,3 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {assertNavigationReady} from '../src/note-navigation.js';
+test('navigation is blocked for uploads, failed uploads, recording, saving and submitting',()=>{for(const state of [{pendingUploads:1},{failedUploads:1},{recording:true},{saving:true},{submitting:true}])assert.throws(()=>assertNavigationReady(state));assert.doesNotThrow(()=>assertNavigationReady({}))});
+test('messages distinguish active recording, unfinished upload and active save',()=>{assert.throws(()=>assertNavigationReady({recording:true}),/录音/);assert.throws(()=>assertNavigationReady({pendingUploads:1}),/上传/);assert.throws(()=>assertNavigationReady({saving:true}),/保存/)});

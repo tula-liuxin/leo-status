@@ -42,6 +42,7 @@ export function createNotesHandler({store,worker,settings}){
     else if(route==='/note')result=store.get(url.searchParams.get('id'))
     else if(route==='/timeline')result=store.timeline(Object.fromEntries(url.searchParams))
     else if(route==='/todos')result=store.todoTimeline(Object.fromEntries(url.searchParams))
+    else if(route==='/tags')result=store.tags(Object.fromEntries(url.searchParams))
     else throw new NoteError('接口不存在',404)
     json(res,200,result);return true
    }
@@ -50,6 +51,8 @@ export function createNotesHandler({store,worker,settings}){
    if(route==='/save')result=store.save(b)
    else if(route==='/commit')result=store.commit(b)
    else if(route==='/check')result=store.check(b)
+   else if(route==='/todo/edit')result=store.editTodo(b)
+   else if(route==='/move')result=store.move(b)
    else if(route==='/trash')result=store.trash(b)
    else if(route==='/trash/purge')result=store.purge(b)
    else if(route==='/title')result=store.title(b)

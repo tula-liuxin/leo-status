@@ -1,3 +1,4 @@
+import {tagKey,normalizeTags,inlineTags,matchTag,noteTags} from './tags.js'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, existsSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
@@ -10,7 +11,7 @@ export function plain(doc) { const lines = []; walk(doc, n => { if (n.type === '
 export function todos(doc) { const result = []; walk(doc, (n, parentId, depth) => { if (n.type === 'taskItem') result.push({ id: n.attrs.id, parentId, depth, text: plain(n.content?.[0] || {}), done: n.attrs.checked === true, completedAt: n.attrs.checked === true ? validTime(n.attrs.completedAt) : null }) }); return result }
 export function normalizeDoc(input) {
   if (!input || input.type !== 'doc') throw new NoteError('笔记格式无效')
-  const doc = structuredClone(input), ids = new Set(); let count = 0
+  const doc = structuredClone(input), ids = new Set(); let count = 0; if(doc.attrs?.noteTags!==undefined){if(!Array.isArray(doc.attrs.noteTags)||doc.attrs.noteTags.some(t=>!tagKey(t)))throw new NoteError('标签格式无效');doc.attrs.noteTags=normalizeTags(doc.attrs.noteTags)}
   const types = new Set(['doc','paragraph','text','heading','bulletList','orderedList','listItem','taskList','taskItem','blockquote','codeBlock','hardBreak','horizontalRule','image','media'])
   walk(doc, n => {
     if (!n || typeof n !== 'object' || ++count > 50000 || !types.has(n.type)) throw new NoteError('笔记过大或包含不支持的内容')
@@ -45,11 +46,12 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
   if(!db.prepare('PRAGMA table_info(notes)').all().some(c=>c.name==='manual_history'))db.exec("ALTER TABLE notes ADD COLUMN manual_history TEXT NOT NULL DEFAULT '[]'")
   if(!db.prepare('PRAGMA table_info(periods)').all().some(c=>c.name==='manual_history'))db.exec("ALTER TABLE periods ADD COLUMN manual_history TEXT NOT NULL DEFAULT '[]'")
   if(!db.prepare('PRAGMA table_info(notes)').all().some(c=>c.name==='first_submitted'))db.exec('ALTER TABLE notes ADD COLUMN first_submitted TEXT')
+  if(!db.prepare('PRAGMA table_info(notes)').all().some(c=>c.name==='parent_id'))db.exec('ALTER TABLE notes ADD COLUMN parent_id TEXT')
   if(!db.prepare('PRAGMA table_info(jobs)').all().some(c=>c.name==='generation'))db.exec('ALTER TABLE jobs ADD COLUMN generation INTEGER NOT NULL DEFAULT 0')
   for(const n of db.prepare('SELECT id FROM notes WHERE first_submitted IS NULL AND committed IS NOT NULL').all()){const stamps=db.prepare('SELECT at FROM versions WHERE note_id=?').all(n.id).map(v=>validTime(v.at)).filter(Boolean).sort();if(stamps.length)db.prepare('UPDATE notes SET first_submitted=? WHERE id=?').run(stamps[0],n.id)}
   const tx = fn => { db.exec('BEGIN IMMEDIATE'); try { const r = fn(); db.exec('COMMIT'); return r } catch(e) { db.exec('ROLLBACK'); throw e } }
   function raw(id) { const n = db.prepare('SELECT * FROM notes WHERE id=?').get(id); if (!n) throw new NoteError('笔记不存在',404); return n }
-  function view(n) { return { id:n.id, rev:n.rev, doc:JSON.parse(n.draft), committed:n.committed ? JSON.parse(n.committed) : null, startedAt:n.started, firstSubmittedAt:n.first_submitted, endedAt:n.ended, updatedAt:n.updated, deletedAt:n.deleted, title:n.manual ?? n.generated ?? (plain(JSON.parse(n.committed || n.draft)).slice(0,50) || '未命名笔记'), manualTitle:n.manual, generatedTitle:n.generated, titleHistory:JSON.parse(n.title_history), dirty:n.draft !== n.committed } }
+  function view(n) { return { id:n.id, rev:n.rev, parentId:n.parent_id||null, doc:JSON.parse(n.draft), committed:n.committed ? JSON.parse(n.committed) : null, startedAt:n.started, firstSubmittedAt:n.first_submitted, endedAt:n.ended, updatedAt:n.updated, deletedAt:n.deleted, title:n.manual ?? n.generated ?? (plain(JSON.parse(n.committed || n.draft)).slice(0,50) || '未命名笔记'), manualTitle:n.manual, generatedTitle:n.generated, titleHistory:JSON.parse(n.title_history), dirty:n.draft !== n.committed } }
   function get(id) { return view(raw(id)) }
   function requireRev(n, rev) { if (n.rev !== rev) throw new NoteError('另一端已更新此笔记。当前草稿已保留，请另存副本或重新载入。',409); if(n.deleted) throw new NoteError('笔记已在回收站',409) }
   function enqueue(id, delay=60000) { db.prepare('INSERT INTO jobs(id,due) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET due=excluded.due,attempts=0,error=NULL,generation=jobs.generation+1').run(id, Date.parse(now())+delay) }
@@ -90,6 +92,24 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
     const patch = body => { const d=JSON.parse(body); walk(d,x=>{if(x.type==='taskItem' && x.attrs.id===id){x.attrs.checked=!!checked;x.attrs.completedAt=completedAt;x.attrs.completionEventId=completionEventId}});return JSON.stringify(d) }
     db.prepare('UPDATE notes SET rev=rev+1,draft=?,committed=?,updated=? WHERE id=?').run(patch(n.draft),patch(n.committed),now(),n.id); schedule(raw(n.id)); return get(n.id)
   }) }
+  function editTodo({id,rev,text}) { return tx(()=>{
+    const value=typeof text==='string'?text.trim():'';if(!value||value.length>10000)throw new NoteError('待办内容不能为空且不能超过 10000 字')
+    const found=board().todos.find(t=>t.id===id);if(!found)throw new NoteError('待办不存在',404);const n=raw(found.noteId);requireRev(n,rev)
+    const draft=JSON.parse(n.draft),committed=JSON.parse(n.committed);let draftNode,committedNode
+    walk(draft,x=>{if(x.type==='taskItem'&&x.attrs.id===id)draftNode=x});walk(committed,x=>{if(x.type==='taskItem'&&x.attrs.id===id)committedNode=x})
+    if(!draftNode||!committedNode||JSON.stringify(draftNode.content?.[0])!==JSON.stringify(committedNode.content?.[0]))throw new NoteError('该待办在笔记草稿中已有未提交修改，请先处理草稿',409)
+    const spans=committedNode.content?.[0]?.content||[];if(spans.some(x=>x.type!=='text')||new Set(spans.map(x=>JSON.stringify(x.marks||[]))).size>1)throw new NoteError('该待办含多种富文本格式，请在笔记中编辑以保留格式',409)
+    for(const x of [draftNode,committedNode]){const p=x.content?.[0];if(p?.type!=='paragraph')throw new NoteError('待办格式不支持直接编辑',409);const marks=p.content?.find(c=>c.type==='text')?.marks;p.content=[{type:'text',text:value,...(marks?{marks}: {})}]}
+    const stamp=now(),body=JSON.stringify(committed);db.prepare('UPDATE notes SET rev=rev+1,draft=?,committed=?,updated=?,content_hash=? WHERE id=?').run(JSON.stringify(draft),body,stamp,hash(committed),n.id);db.prepare('INSERT INTO versions VALUES(?,?,?,?)').run(n.id,n.rev+1,body,stamp);schedule(raw(n.id));return get(n.id)
+  }) }
+  function move({id,rev,parentId=null,parentRev}={}) { return tx(()=>{
+    const n=raw(id);requireRev(n,rev);if(parentId!==null&&typeof parentId!=='string')throw new NoteError('目标笔记无效')
+    if(parentId){const target=raw(parentId);requireRev(target,parentRev);if(n.committed&&!target.committed)throw new NoteError('已提交笔记只能移入已提交笔记',409)
+      let cursor=target;const visited=new Set();while(cursor){if(cursor.id===id||visited.has(cursor.id))throw new NoteError('不能移入自身或其子笔记',409);visited.add(cursor.id);cursor=cursor.parent_id?db.prepare('SELECT * FROM notes WHERE id=?').get(cursor.parent_id):null}
+    }
+    if(n.parent_id!==parentId)db.prepare('UPDATE notes SET parent_id=?,rev=rev+1,updated=? WHERE id=?').run(parentId,now(),id)
+    return get(id)
+  }) }
   function trash({id,rev,restore=false}) { return tx(()=>{const n=raw(id); if(n.rev!==rev) throw new NoteError('笔记版本已变化',409); db.prepare('UPDATE notes SET deleted=?,rev=rev+1,updated=? WHERE id=?').run(restore?null:now(),now(),id); schedule(n); return get(id)}) }
   function referencedAttachments() {
     const ids=new Set()
@@ -126,6 +146,7 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
         db.prepare('DELETE FROM versions WHERE note_id=?').run(n.id)
         db.prepare('DELETE FROM title_runs WHERE target=?').run('note:'+n.id)
         db.prepare('DELETE FROM jobs WHERE id=?').run('note:'+n.id)
+        db.prepare('UPDATE notes SET parent_id=NULL,rev=rev+1,updated=? WHERE parent_id=?').run(now(),n.id)
         db.prepare('DELETE FROM notes WHERE id=?').run(n.id)
       }
       for(const r of db.prepare('SELECT id,result FROM requests').all()){let value;try{value=JSON.parse(r.result)}catch{}if(unique.has(value?.id))db.prepare('DELETE FROM requests WHERE id=?').run(r.id)}
@@ -140,6 +161,16 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
     })
     result.cleanupTasks=processAttachmentGc();result.cleanupPending=result.cleanupTasks.length
     return result
+  }
+  function tags({q='',tag='',scope='all',includeDraft=false}={}) {
+    if(!['all','note','inline'].includes(scope))throw new NoteError('标签范围无效');if(tag&&!tagKey(tag))throw new NoteError('标签格式无效')
+    const showDraft=includeDraft===true||includeDraft==='true';const catalog=new Map(),matches=[];for(const n of list()){
+      const docs=[...(n.committed?[{doc:n.committed,draft:false}]:[]),...(showDraft&&n.dirty?[{doc:n.doc,draft:true}]:[])];const found=[];
+      for(const {doc,draft} of docs){const nt=noteTags(doc),it=inlineTags(doc),items=[...nt.map(label=>({key:tagKey(label),label,scope:'note',taskId:null,draft})),...it.map(x=>({...x,scope:'inline',draft}))];
+        for(const item of items){if(scope!=='all'&&item.scope!==scope)continue;const parts=item.label.split('/');for(let i=1;i<=parts.length;i++){const label=parts.slice(0,i).join('/'),key=tagKey(label);if(!catalog.has(key))catalog.set(key,{key,label,noteIds:new Set()});catalog.get(key).noteIds.add(n.id)}}
+        found.push(...items.filter(x=>(scope==='all'||x.scope===scope)&&(!tag||matchTag(x.key,tag))));
+      }if(tag&&found.length)matches.push({id:n.id,title:n.title,occurrences:found})
+    }const search=String(q).trim().replace(/^#/,'').replace(/#/g,'/').normalize('NFC').toLocaleLowerCase('und');return {tags:[...catalog.values()].filter(x=>!search||x.key.includes(search)).map(x=>({key:x.key,label:x.label,count:x.noteIds.size})).sort((a,b)=>a.key.localeCompare(b.key)),notes:matches}
   }
   function todoTimeline({kind='day',date=dayKey(now()),basis='start',q='',hideCompleted=false}={}) {
     if(!['year','month','week','day'].includes(kind)||!['start','completed'].includes(basis)||!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(Date.parse(date+'T00:00:00Z')))throw new NoteError('待办时间范围无效')
@@ -168,11 +199,11 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
   function timeline({kind='day',date=dayKey(now()),basis='start',depth=1}={}) {
     if(!['year','month','week','day'].includes(kind)||!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(Date.parse(date+'T00:00:00Z'))) throw new NoteError('时间轴参数无效')
     const levels=['year','month','week','day','note']; depth=Math.max(1,Math.min(4,Number(depth)||1))
-    const notes=list().filter(n=>n.committed).map(n=>({...n,day:dayKey(basis==='end'?n.endedAt:n.startedAt),time:basis==='end'?n.endedAt:n.startedAt})).filter(n=>inPeriod(n.day,kind,date)).sort((a,b)=>a.time.localeCompare(b.time))
+    const active=list(),visibleParent=new Set(active.filter(n=>n.committed).map(n=>n.id));const notes=active.filter(n=>n.committed&&(!n.parentId||!visibleParent.has(n.parentId))).map(n=>({...n,day:dayKey(basis==='end'?n.endedAt:n.startedAt),time:basis==='end'?n.endedAt:n.startedAt})).filter(n=>inPeriod(n.day,kind,date)).sort((a,b)=>a.time.localeCompare(b.time))
     const periodTitle=(k,key)=>{const p=db.prepare('SELECT * FROM periods WHERE id=?').get(k+':'+key);return {title:p?.manual??p?.generated??key,manualTitle:p?.manual,generatedTitle:p?.generated,titleHistory:JSON.parse(p?.history||'[]')}}
     const build=(rows,k,left)=>{if(k==='note')return rows.map(n=>({kind:'note',key:n.id,date:n.day,time:n.time,title:n.title,manualTitle:n.manualTitle,generatedTitle:n.generatedTitle,titleHistory:n.titleHistory,noteId:n.id,children:[]})); const groups=new Map();for(const n of rows){const key=k==='year'?n.day.slice(0,4):k==='month'?n.day.slice(0,7):k==='week'?weekKey(n.day):n.day;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(n)}return [...groups].map(([key,items])=>({kind:k,key,date:items[0].day,...periodTitle(k,key),count:items.length,children:left>1?build(items,levels[levels.indexOf(k)+1],left-1):[]}))}
     const key=kind==='year'?date.slice(0,4):kind==='month'?date.slice(0,7):kind==='week'?weekKey(date):date
     return {kind,date,basis,depth,current:{target:kind+':'+key,...periodTitle(kind,key)},rows:build(notes,levels[levels.indexOf(kind)+1],depth)}
   }
-  return {db,dir,get,save,commit,list,board,check,trash,purge,title,timeline,todoTimeline,enqueue,processAttachmentGc,cleanupStatus,close:()=>db.close(),now}
+  return {db,dir,get,save,commit,list,board,check,editTodo,move,trash,purge,title,timeline,todoTimeline,tags,enqueue,processAttachmentGc,cleanupStatus,close:()=>db.close(),now}
 }

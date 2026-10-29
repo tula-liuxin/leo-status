@@ -8,7 +8,7 @@ import { createRelay } from './relay.js'
 import { openNotes, NoteError } from './notes.js'
 import { createNotesHandler, NOTES_API, HUB_NOTES_API } from './notes-http.js'
 import { titleWorker, loggedGenerator } from './notes-titles.js'
-export const name='leo-status',inject=[],PLUGIN_VERSION='2.0.0'
+export const name='leo-status',inject=[],PLUGIN_VERSION='2.1.0'
 const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(value))}
 async function body(req){const chunks=[];let size=0;for await(const c of req){size+=c.length;if(size>8*1024*1024)throw new NoteError('请求过大',413);chunks.push(c)}try{return JSON.parse(Buffer.concat(chunks).toString()||'{}')}catch{throw new NoteError('JSON 无效')}}
 export function apply(ctx,config={}) {
@@ -19,14 +19,16 @@ export function apply(ctx,config={}) {
  async function call(route,value){
   await startup
   if(remote()){
-   const get=['state','note','timeline'].includes(route),url=new URL(settings.device.hubUrl.replace(/\/$/,'')+HUB_NOTES_API+'/'+route)
+   const get=['state','note','timeline','tags'].includes(route),url=new URL(settings.device.hubUrl.replace(/\/$/,'')+HUB_NOTES_API+'/'+route)
    if(get)for(const [k,v] of Object.entries(value||{}))url.searchParams.set(k,v)
    const r=await fetch(url,{method:get?'GET':'POST',headers:{authorization:'Bearer '+settings.device.password,'content-type':'application/json'},body:get?undefined:JSON.stringify(value||{}),signal:AbortSignal.timeout(20000)}),b=await r.json();if(!r.ok)throw new NoteError(b.error||'本机中心不可达',r.status);return b
   }
   if(route==='state')return {board:notes.board(),notes:notes.list()}
   if(route==='note')return notes.get(value.id)
   if(route==='timeline')return notes.timeline(value)
+  if(route==='tags')return notes.tags(value)
   if(route==='save')return notes.save(value)
+  if(route==='move')return notes.move(value)
   if(route==='check')return notes.check(value)
   if(route==='trash')return notes.trash(value)
   if(route==='title')return notes.title(value)
@@ -35,7 +37,7 @@ export function apply(ctx,config={}) {
  const propose=async text=>{const value=String(text||'').trim();if(!value)throw new NoteError('内容不能为空');const n=await call('save',{doc:{type:'doc',content:[{type:'taskList',content:[{type:'taskItem',attrs:{checked:false},content:[{type:'paragraph',content:[{type:'text',text:value}]}]}]}]}});return {ok:true,id:n.id,status:'draft',message:'草稿等待 Leo 提交'}}
  const board={list:async()=>({...((await call('state')).board),mode:settings.mode,role:settings.mode}),stats:async()=>((await call('state')).board.stats),propose,action:async b=>{if(!['done','undone'].includes(b.action))throw new NoteError('请在笔记中编辑或移入回收站；旧来源文件不会再被修改');const n=await call('check',{id:b.id,rev:b.rev,checked:b.action==='done'});return {ok:true,note:n,board:await board.list()}}}
  ctx.provide('leoBoard',board)
- ctx.provide('leoNotes',{get:id=>call('note',{id}),list:()=>call('state'),save:v=>call('save',v),timeline:v=>call('timeline',v),check:v=>call('check',v),trash:v=>call('trash',v),title:v=>call('title',v)})
+ ctx.provide('leoNotes',{get:id=>call('note',{id}),list:()=>call('state'),save:v=>call('save',v),move:v=>call('move',v),timeline:v=>call('timeline',v),tags:v=>call('tags',v),check:v=>call('check',v),trash:v=>call('trash',v),title:v=>call('title',v)})
  ctx.provide('leoHub',{mode:()=>settings.mode,isHub:()=>settings.mode==='hub',isDevice:remote,baseUrl:()=>settings.device.hubUrl,remoteCall:(route,b)=>requestHubYuan({hubUrl:settings.device.hubUrl,password:settings.device.password,route,body:b}),registerRoute:(prefix,fn)=>registerHubRoute(routes,prefix,fn)})
  ctx.effect(()=>{
   startup=(async()=>{
@@ -53,7 +55,7 @@ export function apply(ctx,config={}) {
  },'leo-status notes runtime')
  ctx.inject(['tools'],scope=>{
   scope.effect(()=>scope.tools.register({name:'leo_status',description:'读取 Leo 已提交笔记的待办。propose 创建待确认草稿，不代表 Leo 承诺；仅 Leo 可提交。done/undone 修改正式待办。',parameters:{type:'object',properties:{action:{type:'string',enum:['list','propose','done','undone']},id:{type:'string'},text:{type:'string'}},required:['action'],additionalProperties:false},output:{schema:{type:'string'},render:(_,v)=>[{type:'text',text:v}]},async execute(a){return JSON.stringify(a.action==='list'?await board.list():a.action==='propose'?await propose(a.text):await board.action(a))}}),'leo-status compatibility tool')
-  scope.effect(()=>scope.tools.register({name:'leo_notes',description:'读取笔记和时间轴，或保存带稳定节点 ID 的富文本草稿。不能提交正式版本；save 必须提供读取时的 rev，发生冲突应重新读取。正文 doc 使用 Tiptap JSON。',parameters:{type:'object',properties:{action:{type:'string',enum:['list','get','save','timeline']},id:{type:'string'},rev:{type:'integer'},doc:{type:'object',additionalProperties:true},manualTitle:{type:'string'},kind:{type:'string',enum:['year','month','week','day']},date:{type:'string'},depth:{type:'integer'},basis:{type:'string',enum:['start','end']}},required:['action'],additionalProperties:false},output:{schema:{type:'string'},render:(_,v)=>[{type:'text',text:v}]},async execute(a){const {action,...v}=a;return JSON.stringify(await call({list:'state',get:'note',save:'save',timeline:'timeline'}[action],v))}}),'leo-status notes tool')
+  scope.effect(()=>scope.tools.register({name:'leo_notes',description:'读取笔记和时间轴，或保存带稳定节点 ID 的富文本草稿。不能提交正式版本；save 必须提供读取时的 rev，发生冲突应重新读取。正文 doc 使用 Tiptap JSON。',parameters:{type:'object',properties:{action:{type:'string',enum:['list','get','save','timeline','tags','move']},id:{type:'string'},rev:{type:'integer'},doc:{type:'object',additionalProperties:true},manualTitle:{type:'string'},kind:{type:'string',enum:['year','month','week','day']},date:{type:'string'},depth:{type:'integer'},basis:{type:'string',enum:['start','end']},parentId:{type:['string','null']},parentRev:{type:'integer'},tag:{type:'string'},q:{type:'string'},scope:{type:'string',enum:['all','note','inline']}},required:['action'],additionalProperties:false},output:{schema:{type:'string'},render:(_,v)=>[{type:'text',text:v}]},async execute(a){const {action,...v}=a;return JSON.stringify(await call({list:'state',get:'note',save:'save',timeline:'timeline',tags:'tags',move:'move'}[action],v))}}),'leo-status notes tool')
  })
  ctx.inject(['webServer','connection'],scope=>{
   const matches=v=>{if(typeof v!=='string')return false;const a=Buffer.from(v),b=Buffer.from(token);return a.length===b.length&&timingSafeEqual(a,b)}

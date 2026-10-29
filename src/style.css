@@ -318,3 +318,121 @@
 .ln-prose>ul[data-type=taskList] {margin-left:calc(0px - min(var(--ln-task-fold-width) + var(--ln-task-gap),var(--ln-root-gutter)))}
 @container leo-editor (max-width:600px) {.ln-prose {--ln-task-indent:18px;--ln-root-gutter:15px}}
 @media (pointer:coarse) {.ln-prose {--ln-task-indent:18px;--ln-root-gutter:15px}}
+.ln-todo-main{position:relative;padding-right:var(--actions-width,40px);line-height:1.55}
+.ln-page .ln-todo-text{font-size:13.5px;line-height:1.55}
+.ln-todo-badges{position:absolute;right:0;top:0;margin:0}
+.ln-page .ln-fold-empty{width:0;min-width:0;flex-basis:0;padding:0}
+.ln-todo{align-items:flex-start;row-gap:0;padding-top:3px;padding-bottom:3px}
+.ln-todo>.ln-check-hit{align-self:flex-start;margin-top:0}
+.ln-breadcrumb .ln-check-hit{flex:none}
+@container leo-page (max-width:700px){.ln-todo>small{margin-left:32px}.ln-todo-main{flex-basis:calc(100% - 46px)}}
+@media(pointer:coarse){.ln-todo>small{margin-left:51px}.ln-todo-main{flex-basis:calc(100% - 51px)}.ln-page .ln-fold-empty{width:0;min-width:0;flex-basis:0;padding:0}}
+.ln-tabs>button:not(.ln-icon-button){font-size:12.6px}
+.ln-subtabs button,.ln-controls button,.ln-controls input,.ln-controls label,.ln-date-controls button,.ln-date-controls input,.ln-period h2{font-size:11.2px}
+.ln-inline-edit{display:inline-block;width:100%;vertical-align:top}
+.ln-inline-edit textarea{box-sizing:border-box;width:100%;min-height:38px;resize:vertical;font:inherit;line-height:1.55}
+.ln-inline-edit [role=alert]{display:block;color:var(--ln-danger);font-size:12px}
+.ln-todo-main{padding-top:3px}
+@media(pointer:coarse){.ln-todo-main{padding-top:11px}.ln-todo-badges{top:0}}
+.ln-tabs .ln-icon{width:16.2px;height:16.2px}
+.ln-controls .ln-icon,.ln-date-controls .ln-icon,.ln-period .ln-icon{width:14.4px;height:14.4px}
+@media(pointer:coarse){.ln-editor-scroll{padding-left:49px}.ln-prose>ul[data-type=taskList]{margin-left:calc(0px - var(--ln-task-fold-width) - var(--ln-task-gap))}}
+/* Controls use readable text and proportional desktop sizing. */
+.ln-subtabs button,.ln-controls button,.ln-controls input,.ln-controls label,.ln-date-controls button,.ln-date-controls input{font-size:13px}
+.ln-period h2{font-size:15px;line-height:1.4}
+.ln-controls .ln-icon,.ln-date-controls .ln-icon,.ln-period .ln-icon{width:16px;height:16px}
+.ln-controls>.ln-date-controls{margin:0}
+@media(pointer:fine){
+ .ln-controls button,.ln-date-controls button,.ln-page .ln-controls input:not([type=checkbox]),.ln-page .ln-date-controls input{min-height:32px;padding-block:5px}
+ .ln-subtabs button,.ln-segments button{min-height:28px;padding-block:4px}
+ .ln-stepper .ln-icon-button{height:28px;min-height:28px}
+}
+@media(pointer:coarse){.ln-controls input,.ln-date-controls input{font-size:14px;min-height:44px}.ln-controls button,.ln-date-controls button{min-height:44px}}
+.ln-todo-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0}
+.ln-todo-toolbar .ln-date-controls,.ln-todo-toolbar .ln-controls{margin:0}
+.ln-todo-tools{margin-left:auto!important;gap:8px;flex-wrap:wrap}
+.ln-todo-tools>input:not([type=date]){flex:0 1 210px;min-width:120px}
+.ln-page .ln-fold-empty{display:none}
+.ln-todo-main{flex:1 1 0;min-width:0}
+@container leo-page (max-width:700px){.ln-todo-main{flex:1 1 0;min-width:0}.ln-todo-tools{margin-left:0!important}}
+@container leo-page (max-width:420px){.ln-todo-main{flex:1 1 0;min-width:0}.ln-todo-tools>input:not([type=date]){flex:1 1 130px}}
+@media(pointer:coarse){.ln-todo-main{flex:1 1 0;min-width:0}.ln-todo>.ln-check-hit{align-self:flex-start}.ln-todo-tools>input:not([type=date]){min-height:44px}}
+.ln-inline-edit textarea{display:block;height:auto;overflow-y:hidden;resize:none;min-height:40px;white-space:pre-wrap;overflow-wrap:anywhere}
+.ln-todo-main:has(.ln-inline-edit){padding-right:0}
+.ln-todo-main:has(.ln-inline-edit)>.ln-todo-badges{display:none}
+/* Compact phone layout; the touch targets remain at least 44px. */
+@container leo-page (max-width:420px){
+ .ln-subtabs{margin-bottom:0}.ln-todo-toolbar{margin:7px 0 10px;gap:6px}.ln-todo-tools{gap:5px}
+ .ln-controls:has(>.ln-date-controls){display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:10px 0 14px;align-items:center}
+ .ln-controls>.ln-date-controls{display:contents}
+ .ln-controls>.ln-date-controls>input[type=date]{grid-column:span 3;width:100%;min-width:0}
+ .ln-controls>.ln-date-controls>button:not(.ln-time-toggle){grid-column:span 1;min-width:0;padding-inline:3px}
+ .ln-controls>.ln-date-controls>.ln-segments{grid-column:span 3;display:flex;min-width:0}
+ .ln-controls>.ln-date-controls>.ln-segments>button{flex:1;min-width:0;padding-inline:2px}
+ .ln-controls>.ln-date-controls>.ln-time-toggle{grid-column:span 1;min-width:0;padding-inline:3px;gap:3px}
+ .ln-controls>.ln-date-controls>.ln-stepper{grid-column:span 2;min-width:0;justify-content:center}
+ .ln-controls>.ln-date-controls>.ln-stepper output{min-width:22px;flex:1}
+ .ln-controls:has(>.ln-date-controls)>.ln-primary{grid-column:span 2;justify-self:stretch}
+}
+@container leo-page (max-width:420px){
+ .ln-controls>.ln-date-controls>.ln-segments{grid-column:span 4}
+ .ln-controls>.ln-date-controls>.ln-segments>button{min-width:44px}
+ .ln-controls:has(>.ln-date-controls)>.ln-primary{grid-column:span 1;min-width:0;padding-inline:3px;gap:3px}
+}
+.ln-tabs>button:not(.ln-back-top){position:relative;border-bottom-color:transparent;gap:6px;line-height:1;align-items:center}
+.ln-tabs>button:not(.ln-back-top)[aria-selected=true]:after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--ln-accent)}
+.ln-tabs>button:not(.ln-back-top)>.ln-icon{vertical-align:middle;transform:translateY(.5px)}
+.ln-todo-toolbar{min-width:0}
+.ln-todo-tools{flex:1 1 auto;justify-content:flex-end;min-width:0}
+.ln-todo-tools>input:not([type=date]){min-width:80px}
+@container leo-page (max-width:420px){.ln-todo-tools{justify-content:flex-start}.ln-todo-tools>input:not([type=date]){flex:1 1 100px;min-width:80px}}
+/* Keep the editor footer aligned on narrow screens without shrinking tap targets. */
+@container leo-editor (max-width:600px){
+ .ln-modal>footer{display:flex;align-items:center;gap:8px}
+ .ln-modal>footer>.ln-row{flex:1 1 auto;min-width:0;flex-wrap:nowrap;align-items:center;gap:4px}
+ .ln-modal>footer>.ln-row>small{flex:0 1 auto;width:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.4}
+ .ln-modal>footer>.ln-primary{flex:0 0 auto;align-self:center}
+}
+.ln-note-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 24px 12px;color:var(--ln-muted)}.ln-note-tags input{flex:1;min-width:140px;font-size:12px!important}.ln-tag-pill{display:inline-flex;align-items:center;border-radius:7px;background:var(--ln-soft);padding:2px 5px;font-size:12px}.ln-page .ln-tag-pill button{border:0;min-height:24px;padding:0 4px;background:transparent}.ln-tag-toggle{font-size:18px!important;min-width:34px}.ln-tag-panel{border:1px solid var(--ln-line);border-radius:12px;padding:16px;margin:12px 0;background:var(--ln-bg)}.ln-tag-panel header{display:flex;align-items:center;justify-content:space-between}.ln-tag-panel h3,.ln-tag-results h4{margin:0 0 10px}.ln-tag-panel input{flex:1}.ln-tag-tree{display:grid;max-height:240px;overflow:auto;margin-top:10px}.ln-tag-tree button{justify-content:space-between;text-align:left;border:0}.ln-tag-tree button[aria-pressed=true]{background:var(--ln-soft)}.ln-tag-results>div{display:flex;align-items:center;gap:8px}.ln-tag-results>div button{flex:1;justify-content:flex-start;border:0;text-align:left}.ln-tag-results small{color:var(--ln-muted)}.ln-prose .ln-inline-tag{color:var(--ln-accent);background:var(--ln-soft);border-radius:3px}
+@container leo-editor (max-width:600px){.ln-note-tags{padding-inline:16px}}
+.ln-tag-row{display:flex;align-items:center;min-width:0}.ln-tag-row>button:not(.ln-icon-button){flex:1;min-width:0}.ln-tag-row .ln-icon-button,.ln-tag-spacer{width:34px;flex:none}
+
+.ln-note-relations{padding:4px 24px 8px;color:var(--ln-muted);font-size:12px}.ln-note-relations-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.ln-child-notes{display:flex;gap:6px;flex-wrap:wrap}.ln-child-notes button{font-size:12px;text-align:left;overflow-wrap:anywhere}.ln-note-move-backdrop{z-index:1500}.ln-note-move{width:min(500px,100%);max-height:min(70vh,650px);display:flex;flex-direction:column;gap:10px;overflow:hidden;background:var(--ln-bg);border:1px solid var(--ln-line);border-radius:14px;padding:20px;box-shadow:0 16px 60px #0002}.ln-note-move>header{display:flex;align-items:center;justify-content:space-between}.ln-note-move h3,.ln-note-move p{margin:0}.ln-note-move p{font-size:12px;color:var(--ln-muted)}.ln-note-move-list{overflow:auto;display:flex;flex-direction:column;gap:4px}.ln-note-move-list button{text-align:left;justify-content:flex-start;overflow-wrap:anywhere}.ln-note-move-list small{margin-left:auto}@container leo-editor (max-width:600px){.ln-note-relations{padding-inline:16px}.ln-note-move{margin:16px;align-self:center}}
+.ln-editor-toolbar-wrap{display:flex;align-items:flex-start;border-top:1px solid var(--ln-line);border-bottom:1px solid var(--ln-line)}.ln-editor-toolbar-wrap>.ln-format-wrap{flex:1;min-width:0}.ln-editor-toolbar-wrap .ln-format{border:0}.ln-editor-toolbar-wrap>.ln-move-action{margin:6px 14px 0 0;flex:none}.ln-note-relations:empty{display:none}
+
+/* Compact editing, while retaining touch targets on coarse pointers. */
+.ln-prose{line-height:1.5}
+.ln-prose p{margin-bottom:8px}
+.ln-prose .ln-task{margin:2px 0}
+.ln-taskbody>p:first-child{margin-bottom:0}
+.ln-prose ul[data-type=taskList]{margin-top:2px;margin-bottom:8px}
+.ln-editor-toolbar-wrap{align-items:center}
+.ln-editor-toolbar-wrap .ln-format{padding:4px 20px;gap:1px}
+.ln-editor-toolbar-wrap .ln-format button,.ln-editor-toolbar-wrap>.ln-note-tag-action,.ln-editor-toolbar-wrap>.ln-move-action{width:30px;min-width:30px;height:30px;min-height:30px;padding:6px}
+.ln-editor-toolbar-wrap>.ln-move-action{margin:0 14px 0 0}
+.ln-editor-toolbar-wrap>.ln-note-tag-action{position:relative;font-size:17px;line-height:1;margin:0 2px}
+.ln-note-tag-dot{position:absolute;right:5px;top:5px;width:5px;height:5px;border-radius:50%;background:var(--ln-accent)}
+.ln-note-tag-popover{border-bottom:1px solid var(--ln-line);background:var(--ln-bg)}
+.ln-note-tag-popover .ln-note-tags{padding:7px 20px;min-height:44px}
+.ln-recording:before{display:none}
+.ln-recording-status{color:var(--ln-danger);font-size:12px;white-space:nowrap}
+.ln-recording-status:before{content:'';display:inline-block;width:7px;height:7px;margin-right:6px;border-radius:50%;background:currentColor;vertical-align:1px}
+@media(pointer:coarse){
+ .ln-editor-toolbar-wrap .ln-format{padding:4px 10px}
+ .ln-editor-toolbar-wrap .ln-format button,.ln-editor-toolbar-wrap>.ln-note-tag-action,.ln-editor-toolbar-wrap>.ln-move-action{width:44px;min-width:44px;height:44px;min-height:44px;padding:12px}
+ .ln-editor-toolbar-wrap>.ln-move-action{margin-right:4px}
+ .ln-taskbody>p:first-child{line-height:1.5}
+}
+
+/* Compact timeline controls without stretching them across a narrow screen. */
+@container leo-page (max-width:420px){
+ .ln-controls:has(>.ln-date-controls){display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-start}
+ .ln-controls>.ln-date-controls{display:contents}
+ .ln-controls>.ln-date-controls>input[type=date]{flex:0 1 160px;width:160px;min-width:130px}
+ .ln-controls>.ln-date-controls>button:not(.ln-time-toggle){flex:0 0 auto;padding-inline:10px}
+ .ln-controls>.ln-date-controls>.ln-segments{display:inline-flex;flex:0 0 auto}
+ .ln-controls>.ln-date-controls>.ln-segments>button{flex:0 0 auto;min-width:40px;padding-inline:7px}
+ .ln-controls>.ln-date-controls>.ln-time-toggle,.ln-controls>.ln-date-controls>.ln-stepper,.ln-controls:has(>.ln-date-controls)>.ln-primary{flex:0 0 auto}
+ .ln-controls>.ln-date-controls>.ln-stepper output{flex:0 0 auto;min-width:34px}
+}
+@media(pointer:coarse){@container leo-page (max-width:420px){.ln-controls>.ln-date-controls>.ln-segments>button{min-width:44px}}}
