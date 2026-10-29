@@ -162,7 +162,7 @@ export const Media = Node.create({
 
 function taskExtension(onFocus) {
   return TaskItem.extend({
-    addAttributes() { return { ...this.parent?.(), id: { default: null }, completedAt: { default: null }, completionEventId: { default: null } } },
+    addAttributes() { return { ...this.parent?.(), id: { default: null }, cancelled: { default: false }, completedAt: { default: null }, completionEventId: { default: null } } },
     addNodeView() { return ({ node, editor, getPos }) => {
       let current = node, folded = false
       const dom = document.createElement('li'), fold = document.createElement('button'), checkHit = document.createElement('label'), check = document.createElement('input'), body = document.createElement('div')
@@ -171,7 +171,7 @@ function taskExtension(onFocus) {
       check.type = 'checkbox'; check.contentEditable = 'false'; check.setAttribute('aria-label', '完成待办')
       checkHit.className = 'ln-check-hit'; checkHit.contentEditable = 'false'; checkHit.append(check)
       const render = n => {
-        current = n; check.checked = n.attrs.checked
+        current = n; check.checked = n.attrs.checked; dom.classList.toggle('is-cancelled', n.attrs.cancelled === true)
         const expandable = n.childCount > 1
         fold.disabled = !expandable; fold.style.visibility = expandable ? '' : 'hidden'
         fold.replaceChildren(createIcon(folded ? 'chevronRight' : 'chevronDown', 16))
@@ -182,7 +182,7 @@ function taskExtension(onFocus) {
       fold.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); folded = !folded; render(current) })
       check.addEventListener('change', () => editor.chain().focus().command(({ tr }) => {
         const pos = getPos(); if (typeof pos !== 'number') return false
-        tr.setNodeMarkup(pos, undefined, { ...current.attrs, checked: check.checked, completedAt: check.checked ? new Date().toISOString() : null, completionEventId: crypto.randomUUID() }); return true
+        tr.setNodeMarkup(pos, undefined, { ...current.attrs, checked: check.checked, cancelled: check.checked ? false : current.attrs.cancelled, completedAt: check.checked ? new Date().toISOString() : null, completionEventId: crypto.randomUUID() }); return true
       }).run())
       dom.append(fold, checkHit, body); render(node)
       return {
@@ -321,10 +321,13 @@ export function EditorToolbar({ editorRef }) {
     ['todo', '待办列表', 'toggleTaskList', undefined, 'taskList'], ['indent', '增加缩进', 'sinkListItem', 'taskItem'],
     ['outdent', '减少缩进', 'liftListItem', 'taskItem'],
   ]
+  const findTask=()=>{const editor=editorRef.current;if(!editor||editor.isDestroyed)return null;const $from=editor.state.selection.$from;for(let depth=$from.depth;depth>0;depth--){const node=$from.node(depth);if(node.type.name==='taskItem')return {node,pos:$from.before(depth)}}return null}
+  const task=findTask()
+  const toggleCancelled=()=>{const editor=editorRef.current;if(!editor||editor.isDestroyed)return;const hit=findTask();if(!hit)return;const cancelled=!hit.node.attrs.cancelled;editor.chain().focus().command(({tr})=>{tr.setNodeMarkup(hit.pos,undefined,{...hit.node.attrs,cancelled,checked:cancelled?false:hit.node.attrs.checked,completedAt:cancelled?null:hit.node.attrs.completedAt,completionEventId:cancelled?null:hit.node.attrs.completionEventId});return true}).run()}
   const editor = editorRef.current
   return <div className="ln-format-wrap">
     <div className="ln-format" role="toolbar" aria-label="笔记格式">
-      {buttons.map(([name, label, command, arg, active]) => <button key={name} type="button" className="ln-icon-button" title={label} aria-label={label} aria-pressed={active ? Boolean(editor && !editor.isDestroyed && editor.isActive(active)) : undefined} onMouseDown={e => e.preventDefault()} onClick={() => run(command, arg)}><Icon name={name} /></button>)}
+      {buttons.map(([name, label, command, arg, active]) => <button key={name} type="button" className="ln-icon-button" title={label} aria-label={label} aria-pressed={active ? Boolean(editor && !editor.isDestroyed && editor.isActive(active)) : undefined} onMouseDown={e => e.preventDefault()} onClick={() => run(command, arg)}><Icon name={name} /></button>)}<button type="button" className="ln-icon-button" title={task?.node.attrs.cancelled?'恢复当前待办':'废止当前待办'} aria-label={task?.node.attrs.cancelled?'恢复当前待办':'废止当前待办'} aria-pressed={Boolean(task?.node.attrs.cancelled)} disabled={!task} onMouseDown={e => e.preventDefault()} onClick={toggleCancelled}><Icon name="ban" /></button>
       <span className="ln-toolbar-separator" aria-hidden="true" />
       <button type="button" className="ln-icon-button" title="插入或编辑链接" aria-label="插入或编辑链接" aria-expanded={Boolean(link)} onMouseDown={e => e.preventDefault()} onClick={openLink}><Icon name="link" /></button>
       <button type="button" className="ln-icon-button" title="撤销" aria-label="撤销" onMouseDown={e => e.preventDefault()} onClick={() => run('undo')}><Icon name="undo" /></button>

@@ -51,6 +51,7 @@ export function createNotesHandler({store,worker,settings}){
    if(route==='/save')result=store.save(b)
    else if(route==='/commit')result=store.commit(b)
    else if(route==='/check')result=store.check(b)
+   else if(route==='/cancelTodo')result=store.cancelTodo(b)
    else if(route==='/todo/edit')result=store.editTodo(b)
    else if(route==='/move')result=store.move(b)
    else if(route==='/trash')result=store.trash(b)

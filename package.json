@@ -15,6 +15,7 @@
     "settings.js",
     "sync.js",
     "hub.js",
+    "edit.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",

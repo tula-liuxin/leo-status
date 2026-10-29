@@ -8,6 +8,7 @@ import { createRelay } from './relay.js'
 import { openNotes, NoteError } from './notes.js'
 import { createNotesHandler, NOTES_API, HUB_NOTES_API } from './notes-http.js'
 import { titleWorker, loggedGenerator } from './notes-titles.js'
+import { applyTodoAction } from './edit.js'
 export const name='leo-status',inject=[],PLUGIN_VERSION='2.2.0'
 const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(value))}
 async function body(req){const chunks=[];let size=0;for await(const c of req){size+=c.length;if(size>8*1024*1024)throw new NoteError('请求过大',413);chunks.push(c)}try{return JSON.parse(Buffer.concat(chunks).toString()||'{}')}catch{throw new NoteError('JSON 无效')}}
@@ -30,12 +31,25 @@ export function apply(ctx,config={}) {
   if(route==='save')return notes.save(value)
   if(route==='move')return notes.move(value)
   if(route==='check')return notes.check(value)
+  if(route==='cancelTodo')return notes.cancelTodo(value)
   if(route==='trash')return notes.trash(value)
   if(route==='title')return notes.title(value)
   throw new NoteError('不支持的笔记操作')
  }
  const propose=async text=>{const value=String(text||'').trim();if(!value)throw new NoteError('内容不能为空');const n=await call('save',{doc:{type:'doc',content:[{type:'taskList',content:[{type:'taskItem',attrs:{checked:false},content:[{type:'paragraph',content:[{type:'text',text:value}]}]}]}]}});return {ok:true,id:n.id,status:'draft',message:'草稿等待 Leo 提交'}}
- const board={list:async()=>({...((await call('state')).board),mode:settings.mode,role:settings.mode}),stats:async()=>((await call('state')).board.stats),propose,action:async b=>{if(!['done','undone'].includes(b.action))throw new NoteError('请在笔记中编辑或移入回收站；旧来源文件不会再被修改');const n=await call('check',{id:b.id,rev:b.rev,checked:b.action==='done'});return {ok:true,note:n,board:await board.list()}}}
+ const board={list:async()=>({...((await call('state')).board),mode:settings.mode,role:settings.mode}),stats:async()=>((await call('state')).board.stats),propose,action:async b=>{
+  const action=String(b?.action||'')
+  if(b?.kind==='markdown'){
+   try{
+    const roots=(settings.markdownRoots||[]).map(r=>({path:r.path}))
+    const result=await applyTodoAction({action,filePath:b.file,line:Number(b.line),raw:b.raw??null,roots})
+    return {ok:true,action,result,board:await board.list()}
+   }catch(e){throw new NoteError(e.message,e.code==='changed'?409:e.code==='not-found'?404:400)}
+  }
+  if(!['done','undone','cancel','restore'].includes(action))throw new NoteError('不支持的操作')
+  if(action==='cancel'||action==='restore'){const n=await call('cancelTodo',{id:b.id,rev:b.rev,cancelled:action==='cancel'});return {ok:true,note:n,board:await board.list()}}
+  const n=await call('check',{id:b.id,rev:b.rev,checked:action==='done'});return {ok:true,note:n,board:await board.list()}
+ }}
  ctx.provide('leoBoard',board)
  ctx.provide('leoNotes',{get:id=>call('note',{id}),list:()=>call('state'),save:v=>call('save',v),move:v=>call('move',v),timeline:v=>call('timeline',v),tags:v=>call('tags',v),check:v=>call('check',v),trash:v=>call('trash',v),title:v=>call('title',v)})
  ctx.provide('leoHub',{mode:()=>settings.mode,isHub:()=>settings.mode==='hub',isDevice:remote,baseUrl:()=>settings.device.hubUrl,remoteCall:(route,b)=>requestHubYuan({hubUrl:settings.device.hubUrl,password:settings.device.password,route,body:b}),registerRoute:(prefix,fn)=>registerHubRoute(routes,prefix,fn)})

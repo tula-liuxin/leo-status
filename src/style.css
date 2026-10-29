@@ -350,7 +350,7 @@
 @media(pointer:coarse){.ln-controls input,.ln-date-controls input{font-size:14px;min-height:44px}.ln-controls button,.ln-date-controls button{min-height:44px}}
 .ln-todo-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0}
 .ln-todo-toolbar .ln-date-controls,.ln-todo-toolbar .ln-controls{margin:0}
-.ln-todo-tools{margin-left:auto!important;gap:8px;flex-wrap:wrap}
+.ln-todo-tools{margin-left:0!important;margin-right:auto!important;gap:8px;flex-wrap:wrap}
 .ln-todo-tools>input:not([type=date]){flex:0 1 210px;min-width:120px}
 .ln-page .ln-fold-empty{display:none}
 .ln-todo-main{flex:1 1 0;min-width:0}
@@ -383,7 +383,7 @@
 .ln-tabs>button:not(.ln-back-top)[aria-selected=true]:after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--ln-accent)}
 .ln-tabs>button:not(.ln-back-top)>.ln-icon{vertical-align:middle;transform:translateY(.5px)}
 .ln-todo-toolbar{min-width:0}
-.ln-todo-tools{flex:1 1 auto;justify-content:flex-end;min-width:0}
+.ln-todo-tools{flex:1 1 auto;justify-content:flex-start;min-width:0}
 .ln-todo-tools>input:not([type=date]){min-width:80px}
 @container leo-page (max-width:420px){.ln-todo-tools{justify-content:flex-start}.ln-todo-tools>input:not([type=date]){flex:1 1 100px;min-width:80px}}
 /* Keep the editor footer aligned on narrow screens without shrinking tap targets. */
@@ -450,3 +450,12 @@
 .ln-tag-suggest{position:absolute;z-index:30;top:calc(100% + 4px);left:0;min-width:240px;max-width:340px;max-height:260px;overflow:auto;padding:4px;background:var(--ln-bg);border:1px solid var(--ln-line);border-radius:10px;box-shadow:0 10px 28px #00000026}
 .ln-tag-suggest button{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ln-text);padding:7px 10px;border-radius:6px;font-size:13px;line-height:1.4}
 .ln-tag-suggest button:hover,.ln-tag-suggest button:focus-visible{background:var(--ln-soft)}
+
+/* 废止/完成筛选图标与废止样式 */
+.ln-page .ln-filter-toggle{color:var(--ln-muted)}
+.ln-page .ln-filter-toggle[aria-pressed=true]{background:var(--ln-soft);color:var(--ln-text)}
+.ln-todo.is-cancelled .ln-todo-text{text-decoration:line-through!important;color:var(--ln-muted)!important}
+.ln-todo.is-cancelled .ln-check-hit input{opacity:.55}
+.ln-page .ln-cancel[aria-pressed=true]{color:var(--ln-accent)}
+.ln-prose .ln-task.is-cancelled>.ln-taskbody{color:var(--ln-muted)}
+.ln-prose .ln-task.is-cancelled>.ln-taskbody p{text-decoration:line-through}

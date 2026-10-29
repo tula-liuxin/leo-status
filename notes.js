@@ -8,7 +8,7 @@ export const emptyDoc = () => ({ type: 'doc', content: [{ type: 'paragraph' }] }
 export class NoteError extends Error { constructor(message, status = 400) { super(message); this.status = status } }
 export function walk(doc, visit) { const queue = [[doc, null, 0]]; while (queue.length) { const [node, parent, depth] = queue.pop(); visit(node, parent, depth); const next = node.type === 'taskItem' ? node.attrs.id : parent; for (let i = (node.content?.length || 0) - 1; i >= 0; i--) queue.push([node.content[i], next, depth + (node.type === 'taskItem' ? 1 : 0)]) } }
 export function plain(doc) { const lines = []; walk(doc, n => { if (n.type === 'text') lines.push(n.text || '') }); return lines.join(' ').trim() }
-export function todos(doc) { const result = []; walk(doc, (n, parentId, depth) => { if (n.type === 'taskItem') result.push({ id: n.attrs.id, parentId, depth, text: plain(n.content?.[0] || {}), done: n.attrs.checked === true, completedAt: n.attrs.checked === true ? validTime(n.attrs.completedAt) : null }) }); return result }
+export function todos(doc) { const result = []; walk(doc, (n, parentId, depth) => { if (n.type === 'taskItem') result.push({ id: n.attrs.id, parentId, depth, text: plain(n.content?.[0] || {}), done: n.attrs.checked === true, cancelled: n.attrs.cancelled === true, completedAt: n.attrs.checked === true ? validTime(n.attrs.completedAt) : null }) }); return result }
 export function normalizeDoc(input) {
   if (!input || input.type !== 'doc') throw new NoteError('笔记格式无效')
   const doc = structuredClone(input), ids = new Set(); let count = 0; if(doc.attrs?.noteTags!==undefined){if(!Array.isArray(doc.attrs.noteTags)||doc.attrs.noteTags.some(t=>!tagKey(t)))throw new NoteError('标签格式无效');doc.attrs.noteTags=normalizeTags(doc.attrs.noteTags)}
@@ -16,7 +16,7 @@ export function normalizeDoc(input) {
   walk(doc, n => {
     if (!n || typeof n !== 'object' || ++count > 50000 || !types.has(n.type)) throw new NoteError('笔记过大或包含不支持的内容')
     if (n.content !== undefined && !Array.isArray(n.content)) throw new NoteError('笔记结构无效')
-    if (n.type === 'taskItem') { n.attrs ||= {}; n.attrs.id ||= randomUUID(); if (ids.has(n.attrs.id)) throw new NoteError('待办 ID 重复'); ids.add(n.attrs.id); n.attrs.checked = n.attrs.checked === true }
+    if (n.type === 'taskItem') { n.attrs ||= {}; n.attrs.id ||= randomUUID(); if (ids.has(n.attrs.id)) throw new NoteError('待办 ID 重复'); ids.add(n.attrs.id); n.attrs.checked = n.attrs.checked === true; n.attrs.cancelled = n.attrs.cancelled === true; if (n.attrs.cancelled) { n.attrs.checked = false; n.attrs.completedAt = null } }
     if (n.type === 'image' || n.type === 'media') { if (!/^[a-f0-9-]{36}$/.test(n.attrs?.attachmentId || '')) throw new NoteError('附件尚未上传'); delete n.attrs.src }
     for (const mark of n.marks || []) if (mark.type === 'link' && !/^(https?:|mailto:)/i.test(mark.attrs?.href || '')) throw new NoteError('链接只支持 https/http/mailto')
   }); return doc
@@ -68,6 +68,7 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
       if(!x.attrs.checked)x.attrs.completedAt=null
       else if(old?.checked&&!eventChanged)x.attrs.completedAt=validTime(old.completedAt)
       else x.attrs.completedAt=validTime(x.attrs.completedAt)||stamp
+      if(x.attrs.cancelled){x.attrs.checked=false;x.attrs.completedAt=null;x.attrs.completionEventId=null}
     })
     const body=JSON.stringify(normalized)
     const ids=new Set(todos(normalized).map(t=>t.id))
@@ -89,7 +90,7 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
   function check({id,checked,rev,occurredAt}) { return tx(()=>{
     const found=board().todos.find(t=>t.id===id); if(!found) throw new NoteError('待办不存在',404); const n=raw(found.noteId); if(rev!==undefined) requireRev(n,rev)
     const completedAt=checked ? (found.done?found.completedAt:validTime(occurredAt)||now()) : null,completionEventId=randomUUID()
-    const patch = body => { const d=JSON.parse(body); walk(d,x=>{if(x.type==='taskItem' && x.attrs.id===id){x.attrs.checked=!!checked;x.attrs.completedAt=completedAt;x.attrs.completionEventId=completionEventId}});return JSON.stringify(d) }
+    const patch = body => { const d=JSON.parse(body); walk(d,x=>{if(x.type==='taskItem' && x.attrs.id===id){x.attrs.checked=!!checked;if(checked)x.attrs.cancelled=false;x.attrs.completedAt=completedAt;x.attrs.completionEventId=completionEventId}});return JSON.stringify(d) }
     // A completion toggle changes no title input or period membership.
     db.prepare('UPDATE notes SET rev=rev+1,draft=?,committed=?,updated=? WHERE id=?').run(patch(n.draft),patch(n.committed),now(),n.id); return get(n.id)
   }) }
@@ -102,6 +103,12 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
     const spans=committedNode.content?.[0]?.content||[];if(spans.some(x=>x.type!=='text')||new Set(spans.map(x=>JSON.stringify(x.marks||[]))).size>1)throw new NoteError('该待办含多种富文本格式，请在笔记中编辑以保留格式',409)
     for(const x of [draftNode,committedNode]){const p=x.content?.[0];if(p?.type!=='paragraph')throw new NoteError('待办格式不支持直接编辑',409);const marks=p.content?.find(c=>c.type==='text')?.marks;p.content=[{type:'text',text:value,...(marks?{marks}: {})}]}
     const stamp=now(),body=JSON.stringify(committed);db.prepare('UPDATE notes SET rev=rev+1,draft=?,committed=?,updated=?,content_hash=? WHERE id=?').run(JSON.stringify(draft),body,stamp,hash(committed),n.id);db.prepare('INSERT INTO versions VALUES(?,?,?,?)').run(n.id,n.rev+1,body,stamp);schedule(raw(n.id));return get(n.id)
+  }) }
+  function cancelTodo({id,rev,cancelled=true}) { return tx(()=>{
+    const found=board().todos.find(t=>t.id===id);if(!found)throw new NoteError('待办不存在',404);const n=raw(found.noteId);if(rev!==undefined)requireRev(n,rev)
+    const want=cancelled===true
+    const patch=body=>{const d=JSON.parse(body);walk(d,x=>{if(x.type==='taskItem'&&x.attrs.id===id){x.attrs.cancelled=want;if(want){x.attrs.checked=false;x.attrs.completedAt=null}}});return JSON.stringify(d)}
+    db.prepare('UPDATE notes SET rev=rev+1,draft=?,committed=?,updated=? WHERE id=?').run(patch(n.draft),patch(n.committed),now(),n.id);return get(n.id)
   }) }
   function move({id,rev,parentId=null,parentRev}={}) { return tx(()=>{
     const n=raw(id);requireRev(n,rev);if(parentId!==null&&typeof parentId!=='string')throw new NoteError('目标笔记无效')
@@ -206,5 +213,5 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
     const key=kind==='year'?date.slice(0,4):kind==='month'?date.slice(0,7):kind==='week'?weekKey(date):date
     return {kind,date,basis,depth,current:{target:kind+':'+key,...periodTitle(kind,key)},rows:build(notes,levels[levels.indexOf(kind)+1],depth)}
   }
-  return {db,dir,get,save,commit,list,board,check,editTodo,move,trash,purge,title,timeline,todoTimeline,tags,enqueue,processAttachmentGc,cleanupStatus,close:()=>db.close(),now}
+  return {db,dir,get,save,commit,list,board,check,editTodo,cancelTodo,move,trash,purge,title,timeline,todoTimeline,tags,enqueue,processAttachmentGc,cleanupStatus,close:()=>db.close(),now}
 }
