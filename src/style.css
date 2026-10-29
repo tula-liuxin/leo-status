@@ -551,3 +551,23 @@
 .ln-todo-badges{margin-left:-6px;padding:2px 0;gap:2px}
 .ln-todo-badges .ln-enter-todo{transform:none}
 @media (max-width:600px){.ln-todo-badges{margin-left:-3px;padding:2px 0;gap:2px}}
+
+/* 桌面端时间轴/待办工具条进一步压缩，左右宽度约为原来的 60% */
+@media (pointer:fine){
+.ln-date-controls{gap:4px}
+.ln-date-controls input[type=date]{width:104px;min-height:24px;padding:1px 4px;font-size:11px}
+.ln-date-controls button{min-height:24px;padding:1px 5px;font-size:11px;gap:3px}
+.ln-segments{padding:1px;gap:1px}
+.ln-segments button{min-width:22px;padding-inline:3px;min-height:20px;font-size:11px}
+.ln-time-toggle{padding-inline:4px;min-height:24px;font-size:11px;gap:3px}
+.ln-stepper .ln-icon-button{width:20px;height:20px;min-height:20px;padding:1px}
+.ln-stepper output{font-size:10px}
+.ln-controls .ln-primary{min-height:24px;padding:1px 6px;font-size:11px}
+.ln-todo-tools{gap:2px}
+.ln-todo-tools .ln-icon-button{width:20px;height:20px;min-height:20px;padding:2px}
+.ln-todo-tools .ln-icon-button .ln-icon{width:13px;height:13px}
+.ln-todo-tools .ln-primary{min-height:24px;padding:1px 6px;font-size:11px;gap:3px}
+.ln-todo-tools .ln-primary .ln-icon{width:12px;height:12px}
+.ln-search-wrap{flex-basis:190px}
+.ln-search-wrap>input{min-height:24px;padding:1px 6px;font-size:11px}
+}
