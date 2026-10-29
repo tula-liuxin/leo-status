@@ -509,3 +509,12 @@
 .ln-todo-line .ln-count-badge{min-height:18px;padding:1px 5px;font-size:10px;vertical-align:middle}
 .ln-todo-badges{padding:1px 0}
 @media (max-width:600px){.ln-todo-main{min-height:60px}.ln-todo{min-height:60px}}
+
+/* 勾选框与首行文字对齐；右侧操作继续放大 */
+.ln-todo-main{padding-top:0}
+.ln-todo{min-height:68px}
+.ln-todo-main{min-height:66px}
+.ln-todo-badges{width:38px;min-width:38px}
+.ln-todo-badges .ln-icon-button{width:32px;height:32px;min-height:32px;padding:5px}
+.ln-todo-badges .ln-icon-button .ln-icon{width:20px;height:20px}
+@media (max-width:600px){.ln-todo{min-height:92px}.ln-todo-main{min-height:88px;padding-top:0}.ln-todo-badges{width:46px;min-width:46px}.ln-todo-badges .ln-icon-button{width:40px;height:40px;min-height:40px;padding:6px}.ln-todo-badges .ln-icon-button .ln-icon{width:26px;height:26px}}
