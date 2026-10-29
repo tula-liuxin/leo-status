@@ -442,3 +442,11 @@
 .ln-prose .ln-image-drag{top:4px;left:4px;touch-action:none}.ln-prose .ln-image-block.is-moving{outline:2px dashed var(--ln-accent);opacity:.65}.ln-prose .ln-image-resize{bottom:4px;right:4px;cursor:nwse-resize;touch-action:none}
 .ln-prose .ln-image-block:hover button,.ln-prose .ln-image-block:focus-within button,.ln-prose .ln-image-block.ProseMirror-selectednode button{opacity:1}
 @media(pointer:coarse){.ln-prose .ln-image-drag,.ln-prose .ln-image-resize{width:44px;height:44px;opacity:1}}
+
+/* 搜索框内的轻量标签筛选建议（只做筛选，不再切换到大面板） */
+.ln-search-wrap{position:relative;display:inline-flex;min-width:0;flex:0 1 240px}
+.ln-search-wrap>input{width:100%;flex:1 1 210px}
+.ln-todo-tools>.ln-search-wrap{flex:0 1 240px}
+.ln-tag-suggest{position:absolute;z-index:30;top:calc(100% + 4px);left:0;min-width:240px;max-width:340px;max-height:260px;overflow:auto;padding:4px;background:var(--ln-bg);border:1px solid var(--ln-line);border-radius:10px;box-shadow:0 10px 28px #00000026}
+.ln-tag-suggest button{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ln-text);padding:7px 10px;border-radius:6px;font-size:13px;line-height:1.4}
+.ln-tag-suggest button:hover,.ln-tag-suggest button:focus-visible{background:var(--ln-soft)}
