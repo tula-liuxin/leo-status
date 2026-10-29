@@ -526,3 +526,8 @@
 .ln-todo-badges .ln-icon-button{width:28px;height:28px;min-height:28px;padding:4px}
 .ln-todo-badges .ln-icon-button .ln-icon{width:18px;height:18px}
 @media (max-width:600px){.ln-todo{min-height:72px}.ln-todo-main{min-height:68px}.ln-todo-badges{width:36px;min-width:36px}.ln-todo-badges .ln-icon-button{width:30px;height:30px;min-height:30px;padding:5px}.ln-todo-badges .ln-icon-button .ln-icon{width:20px;height:20px}}
+
+/* 两枚行操作靠近排列，进入图标右移一点 */
+.ln-todo-badges{justify-content:center;gap:2px;padding:0;width:34px;min-width:34px}
+.ln-todo-badges .ln-enter-todo{transform:translateX(4px)}
+@media (max-width:600px){.ln-todo-badges{width:40px;min-width:40px}}
