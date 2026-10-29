@@ -541,3 +541,8 @@
 
 /* todo 勾选框再下移 2px */
 .ln-todo>.ln-check-hit{padding-top:5px}
+
+/* 行操作列宽度贴近按钮宽度，左右留白与上下接近 */
+.ln-todo-badges{width:28px;min-width:28px}
+.ln-todo-badges .ln-enter-todo{transform:translateX(1px)}
+@media (max-width:600px){.ln-todo-badges{width:30px;min-width:30px}.ln-todo-badges .ln-enter-todo{transform:translateX(1px)}}
