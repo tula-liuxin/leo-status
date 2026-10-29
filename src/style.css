@@ -535,3 +535,6 @@
 /* 行操作贴着第一行；进入图标右移 2px */
 .ln-todo-badges{justify-content:flex-start;padding-top:1px;padding-bottom:0}
 .ln-todo-badges .ln-enter-todo{transform:translateX(2px)}
+
+/* todo 勾选框下移 2px */
+.ln-todo>.ln-check-hit{padding-top:3px}
