@@ -55,7 +55,7 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
   function get(id) { return view(raw(id)) }
   function requireRev(n, rev) { if (n.rev !== rev) throw new NoteError('另一端已更新此笔记。当前草稿已保留，请另存副本或重新载入。',409); if(n.deleted) throw new NoteError('笔记已在回收站',409) }
   function enqueue(id, delay=60000) { db.prepare('INSERT INTO jobs(id,due) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET due=excluded.due,attempts=0,error=NULL,generation=jobs.generation+1').run(id, Date.parse(now())+delay) }
-  function schedule(n) { enqueue('note:'+n.id); for(const key of new Set([...periodKeys(n.started),...periodKeys(n.ended || n.started)])) enqueue(key) }
+  function schedule(n) { enqueue('note:'+n.id,12000); for(const key of new Set([...periodKeys(n.started),...periodKeys(n.ended || n.started)])) enqueue(key) }
   function save({ id=randomUUID(), rev=0, doc, manualTitle }) { return tx(() => {
     const normalized=normalizeDoc(doc), stamp=now(); let n=db.prepare('SELECT * FROM notes WHERE id=?').get(id)
     if(n)requireRev(n,rev)
@@ -90,7 +90,8 @@ export function openNotes(dataDir, { now = () => new Date().toISOString(), remov
     const found=board().todos.find(t=>t.id===id); if(!found) throw new NoteError('待办不存在',404); const n=raw(found.noteId); if(rev!==undefined) requireRev(n,rev)
     const completedAt=checked ? (found.done?found.completedAt:validTime(occurredAt)||now()) : null,completionEventId=randomUUID()
     const patch = body => { const d=JSON.parse(body); walk(d,x=>{if(x.type==='taskItem' && x.attrs.id===id){x.attrs.checked=!!checked;x.attrs.completedAt=completedAt;x.attrs.completionEventId=completionEventId}});return JSON.stringify(d) }
-    db.prepare('UPDATE notes SET rev=rev+1,draft=?,committed=?,updated=? WHERE id=?').run(patch(n.draft),patch(n.committed),now(),n.id); schedule(raw(n.id)); return get(n.id)
+    // A completion toggle changes no title input or period membership.
+    db.prepare('UPDATE notes SET rev=rev+1,draft=?,committed=?,updated=? WHERE id=?').run(patch(n.draft),patch(n.committed),now(),n.id); return get(n.id)
   }) }
   function editTodo({id,rev,text}) { return tx(()=>{
     const value=typeof text==='string'?text.trim():'';if(!value||value.length>10000)throw new NoteError('待办内容不能为空且不能超过 10000 字')

@@ -13,13 +13,29 @@ const result = await build({
   }}],
 })
 const impl=await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'))
-const {getSchema,editorExtensions,EditorState,TextSelection,NodeSelection,history,undo,redo,deleteAdjacentAttachment,normalizeLinkHref,descendantCounts}=impl
+const {getSchema,editorExtensions,EditorState,TextSelection,NodeSelection,history,undo,redo,deleteAdjacentAttachment,normalizeLinkHref,descendantCounts,copySliceWithFreshTaskIds,sliceContainsTasks}=impl
 const schema=getSchema(editorExtensions())
 const p=text=>({type:'paragraph',...(text?{content:[{type:'text',text}]}:{})})
 const media={type:'media',attrs:{attachmentId:'00000000-0000-4000-8000-000000000000',mime:'audio/webm',name:'test.webm'}}
 const image={type:'image',attrs:{attachmentId:'10000000-0000-4000-8000-000000000000'}}
 const task=(id,content)=>({type:'taskItem',attrs:{id,checked:false,completedAt:null,completionEventId:null},content})
 const make=(content,pos)=>{const doc=schema.nodeFromJSON({type:'doc',content});return EditorState.create({schema,doc,selection:TextSelection.create(doc,pos),plugins:[history()]})}
+
+test('copied image HTML retains a stable attachment reference without a token',()=>{
+ const n=schema.nodeFromJSON({type:'image',attrs:{attachmentId:'10000000-0000-4000-8000-000000000000',width:240,alt:'图片'}})
+ const spec=schema.nodes.image.spec.toDOM(n);assert.equal(spec[1]['data-leo-attachment-id'],n.attrs.attachmentId);assert.equal(spec[1].width,240);assert.equal(spec[1].src,undefined)
+})
+test('image move preserves dimensions and text; undo and redo move exactly one image',()=>{
+ let state=make([p('before'),{...image,attrs:{...image.attrs,width:240}},p('after')],1)
+ const from=state.doc.child(0).nodeSize,before=state.doc.toJSON();assert.equal(impl.moveImage(state,tr=>state=state.apply(tr),from,state.doc.content.size),true)
+ assert.equal(state.doc.lastChild.type.name,'image');assert.equal(state.doc.lastChild.attrs.width,240);assert.equal(state.doc.textContent,'beforeafter')
+ assert.equal(undo(state,tr=>state=state.apply(tr)),true);assert.deepEqual(state.doc.toJSON(),before);assert.equal(redo(state,tr=>state=state.apply(tr)),true)
+})
+test('pasted task copies receive new IDs while text and image references survive',()=>{
+ const doc=schema.nodeFromJSON({type:'doc',content:[{type:'taskList',content:[task('parent',[p('文字'),image,{type:'taskList',content:[task('child',[p('子项')])]}])]}]})
+ const slice=doc.slice(0,doc.content.size);let i=0;const pasted=copySliceWithFreshTaskIds(slice,()=>`copy-${++i}`)
+ assert.equal(sliceContainsTasks(slice),true);const saved=pasted.content.toJSON();const parent=saved[0].content[0];assert.equal(parent.attrs.id,'copy-1');assert.equal(parent.content[1].attrs.attachmentId,image.attrs.attachmentId);assert.equal(parent.content[2].content[0].attrs.id,'copy-2');assert.equal(doc.child(0).child(0).attrs.id,'parent')
+})
 
 test('Backspace after attachment removes only that block; Undo/Redo restores it',()=>{
  let state=make([p('before'),media,p('after')],10)

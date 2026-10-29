@@ -3,7 +3,9 @@ import { Editor, Extension, Node, getMarkRange, mergeAttributes } from '@tiptap/
 import StarterKit from '@tiptap/starter-kit'
 import { TaskList, TaskItem } from '@tiptap/extension-list'
 import Image from '@tiptap/extension-image'
-import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
+import { Plugin, PluginKey, TextSelection, NodeSelection } from '@tiptap/pm/state'
+import { Fragment, Slice } from '@tiptap/pm/model'
+import { dropPoint } from '@tiptap/pm/transform'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { Icon, createIcon } from './icons.jsx'
 import {tagsInText,matchTag} from '../tags.js'
@@ -86,12 +88,56 @@ const AttachmentBoundaryKeys = Extension.create({
   },
 })
 
+export function moveImage(state, dispatch, from, target) {
+  const node=state.doc.nodeAt(from)
+  if(!node||node.type.name!=='image'||!Number.isInteger(target)||target<0||target>state.doc.content.size||target>=from&&target<=from+node.nodeSize)return false
+  const tr=state.tr.delete(from,from+node.nodeSize), slice=new Slice(Fragment.from(node),0,0)
+  const to=dropPoint(tr.doc,tr.mapping.map(target),slice)
+  if(to==null)return false
+  tr.insert(to,node).setSelection(NodeSelection.create(tr.doc,to))
+  if(dispatch)dispatch(tr.scrollIntoView())
+  return true
+}
+
 export const AttachmentImage = Image.extend({
-  addAttributes() { return { ...this.parent?.(), attachmentId: { default: null } } },
+  draggable: false,
+  addAttributes() { return { ...this.parent?.(), src: { default: null, rendered: false }, attachmentId: { default: null, parseHTML: el => el.getAttribute('data-leo-attachment-id'), renderHTML: attrs => attrs.attachmentId ? { 'data-leo-attachment-id': attrs.attachmentId } : {} } } },
+  parseHTML() { return [{ tag: 'img[data-leo-attachment-id]' }] },
   renderHTML({ HTMLAttributes }) {
-    return ['img', mergeAttributes(HTMLAttributes, { src: attachmentEndpoint('/attachment?id=' + HTMLAttributes.attachmentId) })]
+    // Clipboard HTML carries an attachment reference, never the page token.
+    return ['img', mergeAttributes(HTMLAttributes)]
   },
+  addNodeView() { return ({node,editor,getPos}) => {
+    let current=node, resize=null, moving=null
+    const dom=document.createElement('div'), image=document.createElement('img'), grip=document.createElement('button'), handle=document.createElement('button')
+    dom.className='ln-image-block';dom.contentEditable='false';dom.draggable=false
+    image.draggable=false;image.alt=node.attrs.alt||'图片';image.src=attachmentEndpoint('/attachment?id='+node.attrs.attachmentId)
+    grip.type='button';grip.className='ln-image-drag';grip.title='拖动图片调整位置';grip.setAttribute('aria-label','拖动图片调整位置');grip.textContent='⋮⋮'
+    handle.type='button';handle.className='ln-image-resize';handle.title='拖动调整图片大小；方向键微调';handle.setAttribute('aria-label','调整图片大小');handle.textContent='↘'
+    const display=n=>{current=n;image.alt=n.attrs.alt||'图片';dom.style.width=n.attrs.width?`${n.attrs.width}px`:''}
+    const commit=width=>{const pos=getPos();if(typeof pos!=='number')return;const n=editor.state.doc.nodeAt(pos);if(!n||n.type!==current.type)return;editor.view.dispatch(editor.state.tr.setNodeMarkup(pos,undefined,{...n.attrs,width:Math.max(48,Math.round(width)),height:null}))}
+    handle.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();resize={id:e.pointerId,x:e.clientX,width:dom.getBoundingClientRect().width};handle.setPointerCapture(e.pointerId)})
+    handle.addEventListener('pointermove',e=>{if(!resize||resize.id!==e.pointerId)return;dom.style.width=Math.max(48,resize.width+e.clientX-resize.x)+'px'})
+    const end=e=>{if(!resize||resize.id!==e.pointerId)return;const width=dom.getBoundingClientRect().width;resize=null;commit(width)}
+    handle.addEventListener('pointerup',end);handle.addEventListener('pointercancel',()=>{resize=null;display(current)})
+    handle.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();commit(dom.getBoundingClientRect().width+(e.key==='ArrowRight'?16:-16))})
+    grip.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();moving={id:e.pointerId,x:e.clientX,y:e.clientY};grip.setPointerCapture(e.pointerId);dom.classList.add('is-moving')})
+    grip.addEventListener('pointerup',e=>{if(!moving||moving.id!==e.pointerId)return;const start=moving;moving=null;dom.classList.remove('is-moving');if(Math.hypot(e.clientX-start.x,e.clientY-start.y)<5)return;const pos=getPos(),rect=editor.view.dom.getBoundingClientRect(),area=editor.view.dom.closest('.ln-editor-scroll')?.getBoundingClientRect()||rect;if(e.clientX<area.left||e.clientX>area.right||e.clientY<area.top||e.clientY>area.bottom)return;const hit=e.clientY>=rect.bottom?{pos:editor.state.doc.content.size}:e.clientY<=rect.top?{pos:0}:editor.view.posAtCoords({left:Math.max(rect.left+2,Math.min(rect.right-2,e.clientX)),top:e.clientY});if(typeof pos==='number'&&hit)moveImage(editor.state,editor.view.dispatch,pos,hit.pos)})
+    grip.addEventListener('pointercancel',()=>{moving=null;dom.classList.remove('is-moving')})
+    grip.addEventListener('dragstart',e=>e.preventDefault())
+    dom.append(image,grip,handle);display(node)
+    return {dom,update(next){if(next.type!==current.type||next.attrs.attachmentId!==current.attrs.attachmentId)return false;display(next);return true},stopEvent:e=>handle.contains(e.target)||grip.contains(e.target),ignoreMutation:()=>true}
+  } },
 })
+
+/** Pasted task copies need new identities even when copied to another note. */
+export function copySliceWithFreshTaskIds(slice,makeId=()=>crypto.randomUUID()) {
+  let changed=false
+  const map=node=>{let attrs=node.attrs;if(node.type.name==='taskItem'){attrs={...attrs,id:makeId(),completionEventId:null};changed=true}const children=[];node.content.forEach(child=>children.push(map(child)));return node.isText?node:node.type.create(attrs,Fragment.fromArray(children),node.marks)}
+  const children=[];slice.content.forEach(node=>children.push(map(node)))
+  return changed?new Slice(Fragment.fromArray(children),slice.openStart,slice.openEnd):slice
+}
+export function sliceContainsTasks(slice){let found=false;slice.content.descendants(n=>{if(n.type.name==='taskItem')found=true});return found}
 
 export const Media = Node.create({
   name: 'media', group: 'block', atom: true,
@@ -193,7 +239,11 @@ export default function RichEditor({ doc, onChange, onFocus, editorRef, locateTa
       element: element.current, extensions: editorExtensions(id => callbacks.current.onFocus(id)), content: doc,
       editorProps: {
         attributes: { class: 'ln-prose', spellcheck: 'false', 'aria-label': '笔记正文' },
-        handlePaste(view, event) {
+        handlePaste(view, event, slice) {
+          const html=event.clipboardData?.getData('text/html')||''
+          if (html.includes('data-leo-attachment-id') || sliceContainsTasks(slice)) {
+            event.preventDefault();view.dispatch(view.state.tr.replaceSelection(copySliceWithFreshTaskIds(slice)).scrollIntoView());return true
+          }
           const files = [...(event.clipboardData?.files || [])]
           if (!files.some(file => file.type.startsWith('image/'))) return false
           event.preventDefault(); editorRef.current?.upload?.(files); return true

@@ -1,6 +1,6 @@
 {
   "name": "leo-status",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": false,
   "type": "module",
   "description": "Leo 的时间轴、富文本笔记与层级待办，本机中心存储",
@@ -65,6 +65,6 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/notes.test.mjs test/notes-host.test.mjs test/hub-route-lifecycle.test.mjs test/polish-backend.test.mjs test/editor-*.test.mjs test/features-integration.test.mjs test/tags.test.mjs test/note-move.test.mjs test/note-navigation.test.mjs test/inline-new.test.mjs test/recording-errors.test.mjs"
+    "test": "node --test test/notes.test.mjs test/notes-host.test.mjs test/hub-route-lifecycle.test.mjs test/polish-backend.test.mjs test/editor-*.test.mjs test/features-integration.test.mjs test/tags.test.mjs test/note-move.test.mjs test/note-navigation.test.mjs test/inline-new.test.mjs test/recording-errors.test.mjs test/title-structure.test.mjs test/image-attachments.test.mjs"
   }
 }

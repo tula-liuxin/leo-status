@@ -436,3 +436,9 @@
  .ln-controls>.ln-date-controls>.ln-stepper output{flex:0 0 auto;min-width:34px}
 }
 @media(pointer:coarse){@container leo-page (max-width:420px){.ln-controls>.ln-date-controls>.ln-segments>button{min-width:44px}}}
+.ln-prose .ln-image-block{position:relative;display:block;width:fit-content;max-width:100%;margin:8px 0;line-height:0}
+.ln-prose .ln-image-block img{display:block;width:100%;height:auto;max-width:100%}
+.ln-prose .ln-image-drag,.ln-prose .ln-image-resize{position:absolute;display:grid;place-items:center;width:28px;height:28px;padding:0;border:1px solid var(--ln-line);border-radius:7px;background:var(--ln-bg);color:var(--ln-muted);line-height:1;cursor:grab;opacity:0}
+.ln-prose .ln-image-drag{top:4px;left:4px;touch-action:none}.ln-prose .ln-image-block.is-moving{outline:2px dashed var(--ln-accent);opacity:.65}.ln-prose .ln-image-resize{bottom:4px;right:4px;cursor:nwse-resize;touch-action:none}
+.ln-prose .ln-image-block:hover button,.ln-prose .ln-image-block:focus-within button,.ln-prose .ln-image-block.ProseMirror-selectednode button{opacity:1}
+@media(pointer:coarse){.ln-prose .ln-image-drag,.ln-prose .ln-image-resize{width:44px;height:44px;opacity:1}}

@@ -8,7 +8,7 @@ import { createRelay } from './relay.js'
 import { openNotes, NoteError } from './notes.js'
 import { createNotesHandler, NOTES_API, HUB_NOTES_API } from './notes-http.js'
 import { titleWorker, loggedGenerator } from './notes-titles.js'
-export const name='leo-status',inject=[],PLUGIN_VERSION='2.1.0'
+export const name='leo-status',inject=[],PLUGIN_VERSION='2.2.0'
 const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(value))}
 async function body(req){const chunks=[];let size=0;for await(const c of req){size+=c.length;if(size>8*1024*1024)throw new NoteError('请求过大',413);chunks.push(c)}try{return JSON.parse(Buffer.concat(chunks).toString()||'{}')}catch{throw new NoteError('JSON 无效')}}
 export function apply(ctx,config={}) {
