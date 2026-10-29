@@ -480,3 +480,16 @@
 .ln-todo-main{padding-right:0}
 .ln-todo-badges{position:static;right:auto;top:auto;margin:0;flex:none;width:var(--actions-width,26px)}
 .ln-todo:has(.ln-inline-edit) .ln-todo-badges{display:none}
+
+/* 手机：压缩左侧、放大右侧操作列并至少保留两行高度 */
+@media (max-width:600px){
+.ln-shell{padding:18px 10px 40px}
+.ln-todo{gap:5px;padding-left:calc(2px + var(--indent,0)*8px);min-height:52px}
+.ln-page .ln-check-hit{width:26px;min-width:26px;height:30px;flex-basis:26px}
+.ln-todo>.ln-check-hit{margin:0}
+.ln-todo-main{min-height:44px}
+.ln-todo>small{margin-left:34px}
+.ln-todo-badges{width:34px;min-width:34px;align-self:stretch;justify-content:space-between;padding:1px 0}
+.ln-todo-badges .ln-icon-button{width:24px;height:24px;min-height:24px;padding:3px}
+.ln-todo-badges .ln-icon-button .ln-icon{width:15px;height:15px}
+}
