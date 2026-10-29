@@ -584,3 +584,6 @@
 .ln-date-controls .ln-stepper output{min-width:20px;font-size:10px;line-height:22px}
 .ln-segments button{height:20px;min-height:20px}
 }
+
+.ln-search-box{display:inline-flex;align-items:center;gap:2px;min-width:0}
+.ln-search-box>.ln-icon-button{flex:none}
