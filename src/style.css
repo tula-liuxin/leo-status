@@ -546,3 +546,8 @@
 .ln-todo-badges{width:28px;min-width:28px}
 .ln-todo-badges .ln-enter-todo{transform:translateX(1px)}
 @media (max-width:600px){.ln-todo-badges{width:30px;min-width:30px}.ln-todo-badges .ln-enter-todo{transform:translateX(1px)}}
+
+/* 操作图标的空白框四边尽量一致：与文字间距、两图标间距、上下留白都约 2px */
+.ln-todo-badges{margin-left:-6px;padding:2px 0;gap:2px}
+.ln-todo-badges .ln-enter-todo{transform:none}
+@media (max-width:600px){.ln-todo-badges{margin-left:-3px;padding:2px 0;gap:2px}}
