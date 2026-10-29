@@ -531,3 +531,7 @@
 .ln-todo-badges{justify-content:center;gap:2px;padding:0;width:34px;min-width:34px}
 .ln-todo-badges .ln-enter-todo{transform:translateX(4px)}
 @media (max-width:600px){.ln-todo-badges{width:40px;min-width:40px}}
+
+/* 行操作贴着第一行；进入图标右移 2px */
+.ln-todo-badges{justify-content:flex-start;padding-top:1px;padding-bottom:0}
+.ln-todo-badges .ln-enter-todo{transform:translateX(2px)}
