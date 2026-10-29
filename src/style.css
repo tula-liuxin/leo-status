@@ -538,3 +538,6 @@
 
 /* todo 勾选框下移 2px */
 .ln-todo>.ln-check-hit{padding-top:3px}
+
+/* todo 勾选框再下移 2px */
+.ln-todo>.ln-check-hit{padding-top:5px}
