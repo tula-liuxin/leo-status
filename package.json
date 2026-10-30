@@ -1,6 +1,6 @@
 {
   "name": "leo-status",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "private": false,
   "type": "module",
   "description": "Leo 的时间轴、富文本笔记与层级待办，本机中心存储",
