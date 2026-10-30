@@ -141,12 +141,17 @@ export function sliceContainsTasks(slice){let found=false;slice.content.descenda
 
 export const Media = Node.create({
   name: 'media', group: 'block', atom: true,
-  addAttributes() { return { attachmentId: { default: null }, mime: { default: '' }, name: { default: '' } } },
+  addAttributes() { return {
+    attachmentId: { default: null, parseHTML: el => el.getAttribute('data-media') },
+    mime: { default: '', parseHTML: el => el.getAttribute('data-mime') || '' },
+    name: { default: '', parseHTML: el => el.getAttribute('data-name') || el.querySelector('figcaption')?.textContent || '' },
+  } },
   parseHTML() { return [{ tag: 'figure[data-media]' }] },
   renderHTML({ HTMLAttributes: a }) {
     const src = attachmentEndpoint('/attachment?id=' + a.attachmentId)
     const kind = a.mime.startsWith('audio/') ? 'audio' : a.mime.startsWith('video/') ? 'video' : null
-    return ['figure', { 'data-media': a.attachmentId }, kind ? [kind, { controls: true, src, preload: 'metadata' }] : ['a', { href: src, target: '_blank', rel: 'noopener noreferrer' }, a.name], ['figcaption', {}, a.name]]
+    // 剪贴板 HTML 只带属性：带上 mime/name 才能粘回另一篇笔记且可保存。
+    return ['figure', { 'data-media': a.attachmentId, 'data-mime': a.mime, 'data-name': a.name }, kind ? [kind, { controls: true, src, preload: 'metadata' }] : ['a', { href: src, target: '_blank', rel: 'noopener noreferrer' }, a.name], ['figcaption', {}, a.name]]
   },
   addNodeView() { return ({ node }) => {
     const dom = document.createElement('figure'), a = node.attrs, caption = document.createElement('figcaption')

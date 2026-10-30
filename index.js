@@ -9,7 +9,8 @@ import { openNotes, NoteError } from './notes.js'
 import { createNotesHandler, NOTES_API, HUB_NOTES_API } from './notes-http.js'
 import { titleWorker, loggedGenerator } from './notes-titles.js'
 import { applyTodoAction } from './edit.js'
-export const name='leo-status',inject=[],PLUGIN_VERSION='2.2.0'
+export const name='leo-status',inject=[]
+export const PLUGIN_VERSION=JSON.parse(readFileSync(new URL('./package.json',import.meta.url),'utf8')).version
 const json=(res,status,value)=>{res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(value))}
 async function body(req){const chunks=[];let size=0;for await(const c of req){size+=c.length;if(size>8*1024*1024)throw new NoteError('请求过大',413);chunks.push(c)}try{return JSON.parse(Buffer.concat(chunks).toString()||'{}')}catch{throw new NoteError('JSON 无效')}}
 export function apply(ctx,config={}) {

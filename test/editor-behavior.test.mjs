@@ -99,3 +99,16 @@ test('Collapsed selection inserts a visible URL and supports undo',()=>{
  undo(state,tr=>state=state.apply(tr));assert.equal(state.doc.textContent,'')
  assert.equal(impl.changeLink(state,()=>assert.fail(),{from:1,to:999,href:'https://example.com'}),false)
 })
+
+test('Pasted media HTML round-trips attachment id, mime and name',()=>{
+ const node=schema.nodeFromJSON({type:'media',attrs:{attachmentId:'00000000-0000-4000-8000-000000000000',mime:'video/webm',name:'录音.webm'}})
+ globalThis.document={baseURI:'http://localhost/'};globalThis.window={}
+ const dom=node.type.spec.toDOM(node),attrs=impl.Media.config.addAttributes()
+ delete globalThis.document;delete globalThis.window
+ const el=(values,figcaption)=>({getAttribute:n=>values[n]??null,querySelector:()=>figcaption?{textContent:figcaption}:null})
+ assert.equal(dom[1]['data-media'],node.attrs.attachmentId);assert.equal(dom[1]['data-mime'],'video/webm');assert.equal(dom[1]['data-name'],'录音.webm')
+ const pasted=el({'data-media':node.attrs.attachmentId,'data-mime':'video/webm','data-name':'录音.webm'})
+ assert.equal(attrs.attachmentId.parseHTML(pasted),node.attrs.attachmentId);assert.equal(attrs.mime.parseHTML(pasted),'video/webm');assert.equal(attrs.name.parseHTML(pasted),'录音.webm')
+ const legacy=el({'data-media':node.attrs.attachmentId},'旧录音.webm')
+ assert.equal(attrs.attachmentId.parseHTML(legacy),node.attrs.attachmentId);assert.equal(attrs.name.parseHTML(legacy),'旧录音.webm')
+})
