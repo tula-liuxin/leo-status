@@ -167,7 +167,7 @@ ${t}
 .ln-page .ln-danger {color:var(--ln-danger);border-color:color-mix(in srgb,var(--ln-danger) 25%,var(--ln-bg))}\r
 .ln-page .ln-danger:hover:not(:disabled) {background:color-mix(in srgb,var(--ln-danger) 7%,var(--ln-bg))}\r
 .ln-tooltip {position:relative;display:inline-flex;align-items:center}\r
-.ln-tooltip[data-tooltip]:is(:hover,:focus-within):after {content:attr(data-tooltip);position:absolute;z-index:20;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);padding:5px 8px;border:1px solid var(--ln-line);border-radius:6px;background:var(--ln-text);color:var(--ln-bg);white-space:nowrap;font-size:11px;pointer-events:none}\r
+.ln-tooltip[data-tooltip]:is(:hover,:focus-within):after {content:attr(data-tooltip);position:absolute;z-index:2;bottom:calc(100% + 7px);left:50%;transform:translateX(-50%);padding:5px 8px;border:1px solid var(--ln-line);border-radius:6px;background:var(--ln-text);color:var(--ln-bg);white-space:nowrap;font-size:11px;pointer-events:none}\r
 .ln-head {display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px}\r
 .ln-head h1 {margin:0;font-size:25px;font-weight:650;letter-spacing:-.5px}\r
 .ln-head p {margin:6px 0 0;font-size:13px;color:var(--ln-muted)}\r
@@ -284,6 +284,10 @@ ${t}
 .ln-prose pre {background:var(--ln-soft);padding:14px;overflow:auto;border:1px solid var(--ln-line);border-radius:8px}\r
 .ln-prose a {color:var(--ln-accent);text-decoration:underline;text-underline-offset:3px}\r
 .ln-prose .ProseMirror-selectednode {outline:2px solid var(--ln-accent);outline-offset:3px;border-radius:6px}\r
+/* ProseMirror's drop cursor hard-codes z-index:50 as an inline style. Keep it\r
+   inside the same <20 main-page budget so a drag never paints over the shell\r
+   overlay layer (ayuan float). */\r
+.prosemirror-dropcursor-block,.prosemirror-dropcursor-inline{z-index:2!important}\r
 .ln-modal>footer {display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 24px;border-top:1px solid var(--ln-line);background:var(--ln-bg)}\r
 .ln-modal footer small {font-size:11px;color:var(--ln-muted)}\r
 .ln-modal>.ln-error {margin:8px 20px}\r
@@ -407,9 +411,13 @@ ${t}
  .ln-todo>small {margin-left:102px}\r
 }\r
 \r
-/* Keep primary navigation reachable while scrolling the plugin itself. */\r
+/* Keep primary navigation reachable while scrolling the plugin itself.\r
+   The main slot is painted before the shell overlay layer (z-index:20, its own\r
+   stacking context), so non-modal page chrome here must stay below 20 or it\r
+   will cover the overlay (e.g. the ayuan float). Only full-screen modals may\r
+   exceed this budget (see .ln-backdrop/.ln-note-move-backdrop). */\r
 .ln-tabs {\r
- position:sticky;top:var(--ln-nav-top,0px);z-index:30;\r
+ position:sticky;top:var(--ln-nav-top,0px);z-index:2;\r
  min-height:46px;background:var(--ln-bg);\r
  box-shadow:0 1px 0 var(--ln-line);\r
 }\r
@@ -586,7 +594,7 @@ ${t}
 .ln-search-wrap{position:relative;display:inline-flex;min-width:0;flex:0 1 240px}\r
 .ln-search-wrap>input{width:100%;flex:1 1 210px}\r
 .ln-todo-tools>.ln-search-wrap{flex:0 1 240px}\r
-.ln-tag-suggest{position:absolute;z-index:30;top:calc(100% + 4px);left:0;min-width:240px;max-width:340px;max-height:260px;overflow:auto;padding:4px;background:var(--ln-bg);border:1px solid var(--ln-line);border-radius:10px;box-shadow:0 10px 28px #00000026}\r
+.ln-tag-suggest{position:absolute;z-index:2;top:calc(100% + 4px);left:0;min-width:240px;max-width:340px;max-height:260px;overflow:auto;padding:4px;background:var(--ln-bg);border:1px solid var(--ln-line);border-radius:10px;box-shadow:0 10px 28px #00000026}\r
 .ln-tag-suggest button{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--ln-text);padding:7px 10px;border-radius:6px;font-size:13px;line-height:1.4}\r
 .ln-tag-suggest button:hover,.ln-tag-suggest button:focus-visible{background:var(--ln-soft)}\r
 \r
