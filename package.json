@@ -1,6 +1,6 @@
 {
   "name": "leo-status",
-  "version": "2.3.4",
+  "version": "2.3.5",
   "private": false,
   "type": "module",
   "description": "Leo 的时间轴、富文本笔记与层级待办，本机中心存储",
@@ -61,6 +61,7 @@
     "@tiptap/extension-image": "3.32.0",
     "@tiptap/extension-link": "3.32.0",
     "@tiptap/extension-list": "3.32.0",
+    "@tiptap/pm": "3.32.0",
     "@tiptap/starter-kit": "3.32.0",
     "esbuild": "0.28.2"
   },
